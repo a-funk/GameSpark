@@ -112,9 +112,18 @@ setting for the autotuner to choose.
 
 ## Things that do not work yet
 
-- **FEX Vulkan thunking inside Steam's container.** Setting `Vulkan: 1` has no effect for games: inside
-  pressure-vessel the native arm64 `libvulkan.so.1` is not visible (the host copy is only reachable at
-  `/var/lib/snapd/hostfs`), so FEX silently falls back to NVIDIA's x86 driver.
+- **FEX Vulkan thunking inside Steam's container (Steam snap).** It works outside the container: x86
+  `vulkaninfo` under the snap's FEX with `Vulkan: 1` reports the host's arm64 Mesa (LLVM 20.1.2, 128-bit)
+  instead of the x86 image's (LLVM 20.1.8, 256-bit). Inside pressure-vessel it does not engage:
+  - the game maps the x86 `libvulkan.so.1.4.309` and FEX logs no thunk activity at all;
+  - the container's arm64 side holds only FEX's own five libraries; the host's `libvulkan.so.1` and NVIDIA's
+    arm64 driver (which also needs arm64 `libX11`/`libXext`) are only under `/var/lib/snapd/hostfs`;
+  - pressure-vessel rewrites `LD_LIBRARY_PATH`, so adding that directory from the launch options is dropped;
+  - `FEX_HOSTENV=VK_DRIVER_FILES=...` reaches the x86 loader too and breaks instance creation.
+
+  Worth fixing for DX11 games (DXVK + emulated driver + Wine are over half their CPU), less for DX12. Options:
+  a system FEX (PPA 2607+) with its own RootFS, which a public GB10 setup reports thunking games with; or a
+  steam-snap change so pressure-vessel imports the host's arm64 graphics stack for FEX.
 - **`scx_lavd`** panics on GB10 (`cpu_order.rs:433` unwrap on missing CPU cluster information, scx 1.1.2).
 - **`preempt=full` at runtime**: Secure Boot puts the kernel in `lockdown=integrity`, which denies
   `/sys/kernel/debug/sched/preempt`. It needs the kernel command line and a reboot.
