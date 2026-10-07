@@ -18,22 +18,23 @@ hold_quiet_locks
 OUT=$SG_DATA/runs/$(date +%Y%m%d-%H%M%S)-$GAME-$LABEL; mkdir -p "$OUT"
 game_prepare "$OUT"
 cp "$FEX_CONFIG_DIR/Config.json" "$OUT/fex-Config.json" 2>/dev/null
-python3 -I "$ROOT/bench/telemetry.py" "$OUT/telemetry.jsonl" & TEL=$!
-trap 'kill $TEL 2>/dev/null' EXIT
+python3 -I "$ROOT/bench/telemetry.py" "$OUT/telemetry.jsonl" 8>&- & TEL=$!
+# Background helpers must not inherit the run lock (fd 8); the driver is stopped with the run.
+trap 'kill $TEL 2>/dev/null; [ -n "${DRIVE:-}" ] && { pkill -P "$DRIVE" 2>/dev/null; kill "$DRIVE" 2>/dev/null; }' EXIT
 date +%s > "$OUT/start"
-[ -n "${SHOT_AT:-}" ] && (sleep "$SHOT_AT"; "$ROOT/tools/shot.sh" "$OUT/mid.png" >/dev/null) &
+[ -n "${SHOT_AT:-}" ] && (sleep "$SHOT_AT"; "$ROOT/tools/shot.sh" "$OUT/mid.png" >/dev/null) 8>&- &
 
 steam_launch "$APPID" "$LAUNCH_ARGS" || die "Steam did not accept the launch"
 for i in $(seq 300); do G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break; sleep 1; done
 [ -z "${G:-}" ] && die "game never started"
 echo "game pid $G after ${i}s"
 # The governor (system/governor.sh) may switch schedulers once the game appears; record what the run used.
-(sleep 10; echo "$(cat /sys/kernel/sched_ext/state 2>/dev/null) $(cat /sys/kernel/sched_ext/root/ops 2>/dev/null)" > "$OUT/sched") &
+(sleep 10; echo "$(cat /sys/kernel/sched_ext/state 2>/dev/null) $(cat /sys/kernel/sched_ext/root/ops 2>/dev/null)" > "$OUT/sched") 8>&- &
 if [ "${PIN_FAST:-0}" = 1 ]; then
   for p in $(pgrep -f "$GAME_PROC"); do taskset -a -cp "$(fast_cpus)" "$p" >/dev/null; done; echo "pinned to $(fast_cpus)"
 fi
 # Games whose benchmark has no command-line switch: the adapter drives the menus and closes the game when done.
-declare -F game_drive >/dev/null && { game_drive "$OUT" "$G" > "$OUT/drive.log" 2>&1 & }
+declare -F game_drive >/dev/null && { game_drive "$OUT" "$G" > "$OUT/drive.log" 2>&1 8>&- & DRIVE=$!; }
 for i in $(seq 1800); do pgrep -f "$GAME_PROC" >/dev/null || break; sleep 1; done
 date +%s > "$OUT/end"; sleep 3
 

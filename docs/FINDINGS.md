@@ -98,6 +98,27 @@ Per-layer CPU profiles of the same runs:
 - The very first DX11 run (game's first launch) scored 83.1; Steam pre-compiles Vulkan shaders for this game
   before first launch, but the game's own caches still warm up on the first run.
 
+## System FEX 2610 with the native Vulkan driver
+
+`system/fex-system.sh` installs FEX 2610 (armv8.4 build) with Vulkan/GL thunking and runs Valve's Steam launcher
+under it, sharing the snap's Steam folder (`share-snap`), so game files, prefixes and settings are identical and
+only FEX differs. Inside Steam's container this FEX does engage thunking: the game maps FEX's host thunks and
+NVIDIA's native arm64 `libGLX_nvidia`/`libnvidia-glcore`.
+
+| Setup (same settings) | Cyberpunk 2077 | Rise of the Tomb Raider DX12 | DX11 |
+|---|---:|---:|---:|
+| Snap, FEX 2603 (driver emulated) | 59.3 | 135.3 | 128.9 |
+| FEX 2610, thunks off (driver emulated) | 62.3 | 125.0 | |
+| FEX 2610 + native Vulkan driver | **69.2** (1% low 44.6) | 126.0 | 120.5 |
+
+- **Cyberpunk: +17% over the snap**, split into +5% from FEX 2610 and +11% from the native driver; 1% lows
+  +29%.
+- **Tomb Raider: about 7% slower than the snap**, and thunking is neutral for it. The loss comes from FEX 2610 or
+  its environment, not the driver. Copying the snap's FEX settings into the new config changed nothing (126.0).
+- The first run after switching drivers rebuilds the driver's shader cache (111-118 fps); count the second.
+- So the best setup is per game, like the scheduler. FEX can turn thunking off per executable (AppConfig), but
+  the FEX version is per Steam install.
+
 ## The scheduler is a per-game choice
 
 | Game | Default scheduler | `scx_bpfland -m performance` | Effect |
@@ -112,7 +133,7 @@ setting for the autotuner to choose.
 
 ## Things that do not work yet
 
-- **FEX Vulkan thunking inside Steam's container (Steam snap).** It works outside the container: x86
+- **FEX Vulkan thunking inside the Steam snap's container** (solved by the system FEX setup above). It works outside the container: x86
   `vulkaninfo` under the snap's FEX with `Vulkan: 1` reports the host's arm64 Mesa (LLVM 20.1.2, 128-bit)
   instead of the x86 image's (LLVM 20.1.8, 256-bit). Inside pressure-vessel it does not engage:
   - the game maps the x86 `libvulkan.so.1.4.309` and FEX logs no thunk activity at all;

@@ -21,6 +21,7 @@ Cyberpunk 2077 built-in benchmark, 1080p, High, ray tracing off ([details](docs/
 | + DLSS Quality | 50.7 | 26.5 |
 | + `scx_bpfland` scheduler (`system/scheduler.sh`) | 59.3 (vs 53.9 default, clean) | 34.5 |
 | + DLSS frame generation 2x | **100.4 shown** (50.2 rendered) | 58.0 shown |
+| System FEX 2610 + native Vulkan driver (`system/fex-system.sh`), no frame gen | **69.2** | 44.6 |
 
 What we learned:
 
@@ -29,6 +30,8 @@ What we learned:
   games limited by one main thread (-3% in Rise of the Tomb Raider), so the scheduler is a per-game choice.
 - **DirectX 12 translates more cheaply than DirectX 11**: in Rise of the Tomb Raider, VKD3D costs 5% of the
   game's CPU vs 37% for DXVK, and DX12 runs 4.5% faster with half the CPU.
+- **Running NVIDIA's Vulkan driver natively** (FEX 2610 thunking, via a system FEX next to the snap) is +11% in
+  Cyberpunk on top of +5% from the newer FEX; neutral in Tomb Raider, where FEX 2610 itself is 7% slower.
 - In Cyberpunk, **63% of the game's CPU time is its own translated code** and 23% is kernel context switching;
   NVIDIA's emulated driver plus VKD3D is only ~7%.
 
