@@ -7,6 +7,7 @@
 #   tools/steam-config.sh compat-tool 391220 proton_experimental   # Windows build, not Feral's native port
 #   launch once and acknowledge Square Enix's terms in-game
 # Env: ROTTR_API=dx11|dx12 (default dx11)
+TUNE_KNOBS='ROTTR_API=dx11,dx12'   # searched by bench/tune.py
 APPID=391220
 GAME_PROC='^[A-Z]:.*ROTTR\.exe'   # the Wine process (S:\...\ROTTR.exe), not Steam's reaper, whose command line also names it
 LAUNCH_ARGS=''

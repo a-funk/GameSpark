@@ -44,8 +44,13 @@ passwordless sudo or membership in the `docker` group (scripts fall back to a pr
 git clone <this repo> ~/gamespark && cd ~/gamespark
 make test                                   # offline checks
 
-system/scheduler.sh install                 # optional: scx_bpfland preferring the fast cores (helps many-thread games)
+system/governor.sh install                  # per-game scheduler from profiles/ (scx_bpfland only where it helps)
 system/console-mode.sh enable               # optional: log in and open Steam Big Picture at boot
+
+# Optional: system FEX 2610 with NVIDIA's native Vulkan driver, as a second Steam on the same library
+# (Cyberpunk +17%, Tomb Raider -7%; see docs/FINDINGS.md). Close Steam first.
+system/fex-system.sh install && system/fex-system.sh share-snap
+GAMESPARK_STEAM=fex tools/steam-console.sh  # export GAMESPARK_STEAM=fex for the commands below too
 controller/README.md                        # optional: Xbox controller over Bluetooth
 
 # Benchmark (Steam running, game installed):
@@ -54,6 +59,10 @@ QUIET_LOCKS=/path/to/cron.lock SHOT_AT=85 bench/run.sh cyberpunk2077 my-label
 # Per-layer CPU profile (needs FEX_LIBRARYJITNAMING=1 in the game's launch options):
 tools/steam-config.sh launch-options 1091500 "FEX_LIBRARYJITNAMING=1 PROTON_ENABLE_NVAPI=1 %command%"
 profile/profile.sh cyberpunk2077 my-label
+
+# Autotune: benchmark each combination of a game's options, write profiles/GAME.conf and apply it
+bench/tune.py rottr --dry-run               # list the runs first (about 4 min each for this game)
+bench/tune.py rottr
 ```
 
 Run records land in `~/.local/share/gamespark/` (override with `SG_DATA`).
@@ -68,8 +77,9 @@ and an x86-64 Proton (Experimental, 10 or 11), not the ARM64 Proton build.
 | `bench/run.sh`, `bench/games/*.sh` | Benchmark runner and per-game adapters (launch args, where results land) |
 | `bench/ingest.py` | Run record: avg and 1% low (rendered and displayed), telemetry for the benchmark window |
 | `bench/telemetry.py` | 1 Hz GPU/CPU sampler |
+| `bench/tune.py`, `profiles/` | Autotuner and the per-game profiles it writes |
 | `profile/` | perf + FEX perf-map profiler and the layer classifier |
-| `system/` | Scheduler installer, console mode |
+| `system/` | Per-game scheduler governor, system FEX setup, console mode, global scheduler installer |
 | `tools/` | Steam pipe helpers, launch-option editor, screenshots, GPU bandwidth probe |
 | `controller/` | Xbox controller Bluetooth fix and pairing script |
 | `results/` | Run and profile records behind the numbers in this README |
@@ -78,7 +88,8 @@ and an x86-64 Proton (Experimental, 10 or 11), not the ARM64 Proton build.
 ## Known issues
 
 - Games with kernel anti-cheat in online modes (EAC, BattlEye) do not run.
-- FEX Vulkan thunking does not reach games inside Steam's container yet (see FINDINGS).
+- FEX Vulkan thunking does not reach games inside the Steam snap's container; `system/fex-system.sh` works
+  around it with a second Steam under a system FEX. Run only one of the two Steams at a time.
 - `scx_lavd` crashes on GB10; `system/scheduler.sh` uses `scx_bpfland`.
 - Console mode turns on automatic login: anyone at the TV gets the desktop session.
 - Screenshots can include Steam friend notifications; check before sharing.

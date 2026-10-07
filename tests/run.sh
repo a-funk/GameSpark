@@ -8,7 +8,7 @@ mapfile -t SH < <(git ls-files '*.sh' 2>/dev/null)
 for f in "${SH[@]}"; do
   bash -n "$f" || { echo "syntax: $f"; fail=1; }
 done
-for t in bench/ingest.py profile/analyze.py tools/steamcfg.py tools/winereg.py; do
+for t in bench/ingest.py bench/tune.py profile/analyze.py tools/steamcfg.py tools/winereg.py; do
   out=$(python3 -I "$t" --selftest 2>&1) && echo "ok   $t" || { echo "FAIL $t"; echo "$out"; fail=1; }
 done
 for f in bench/telemetry.py bench/cyberpunk2077_settings.py controller/xbox-watch.py tools/xinput.py; do

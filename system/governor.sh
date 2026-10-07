@@ -7,6 +7,7 @@
 # Usage: system/governor.sh run          foreground loop (what the service runs)
 #        system/governor.sh install      systemd user service, starts now and at login
 #        system/governor.sh uninstall | status
+#        system/governor.sh set bpfland|default   switch now (pause the loop first, or it switches back)
 # Pause (e.g. for scheduler A/B benchmarks): touch $SG_DATA/governor.pause
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$ROOT/lib/env.sh"
@@ -58,5 +59,7 @@ case "${1:-status}" in
     echo "sched_ext: $(cat /sys/kernel/sched_ext/state) $(cat /sys/kernel/sched_ext/root/ops 2>/dev/null)"
     [ -e "$SG_DATA/governor.pause" ] && echo "paused ($SG_DATA/governor.pause)"
     for c in "$ROOT"/profiles/*.conf; do echo "profile $(basename "$c" .conf): $(grep -h '^SCHED=' "$c")"; done ;;
-  *) die "usage: $0 run|install|uninstall|status" ;;
+  set)
+    case "${2:-}" in bpfland|default) apply "$2"; echo "scheduler: $2" ;; *) die "usage: $0 set bpfland|default" ;; esac ;;
+  *) die "usage: $0 run|install|uninstall|status|set" ;;
 esac

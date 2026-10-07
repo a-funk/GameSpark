@@ -27,6 +27,21 @@
 Two identical runs (B1, E1) differed by 2.2%. Treat differences under ~3% as noise unless repeated.
 Steam downloads, shader pre-compilation and cron jobs all compete for the CPU; do not benchmark during them.
 
+## Autotuning (`bench/tune.py`)
+
+- The search space is the scheduler (`default`, `bpfland`) times the values in the adapter's `TUNE_KNOBS`
+  (e.g. `ROTTR_API=dx11,dx12`). The first value of each knob is the default configuration.
+- Adapter knobs are the outer loop. Each new combination starts with one discarded warm-up run, because the
+  first run after a graphics API or driver change rebuilds shader caches (DX12: 118 then 126 fps).
+- Each configuration then runs `--reps` times (default 2). The tuner pauses the governor and sets the scheduler
+  itself; runs that recorded a different scheduler are discarded.
+- A challenger replaces the default only if its mean is more than `--noise` (default 2%) faster. Single runs
+  vary by up to ~3%; the mean of two varies by about 2%.
+- The winner is written to `profiles/GAME.conf` with every configuration's mean as comments, and applied: the
+  adapter's `game_prepare` runs with the winning knobs (e.g. writes the registry), and the governor applies
+  `SCHED` whenever the game runs.
+- A profile is specific to the Steam setup it was tuned on (`GAMESPARK_STEAM`, recorded in the header).
+
 ## CPU profiles (`profile/profile.sh`)
 
 - perf samples every core at 499 Hz for 45 s, starting 50 s after the game process appears (the benchmark
