@@ -99,14 +99,16 @@ def main():
         return
     pause = os.path.join(adapter_sh(a.game, 'printf %s "$SG_DATA"'), "governor.pause")
     open(pause, "w").close()   # the tuner sets the scheduler itself
-    scores, lows = {}, {}
+    scores, lows, fails = {}, {}, {}
     try:
         for i, (cfg, warm) in enumerate(steps, 1):
             print(f"[{i}/{len(steps)}] {'warm-up ' if warm else ''}{key(cfg)}", flush=True)
             rec = bench(a.game, cfg, warm)
-            if rec:
-                print(f"    {rec['avg_fps']} fps (1% low {rec.get('low1_fps')})", flush=True)
-            if rec and not warm:
+            if not rec:
+                fails[key(cfg)] = fails.get(key(cfg), 0) + 1   # reported in the profile: crashes count against it
+                continue
+            print(f"    {rec['avg_fps']} fps (1% low {rec.get('low1_fps')})", flush=True)
+            if not warm:
                 scores.setdefault(key(cfg), []).append(rec["avg_fps"])
                 if rec.get("low1_fps") is not None:
                     lows.setdefault(key(cfg), []).append(rec["low1_fps"])
@@ -122,7 +124,9 @@ def main():
            "# Mean fps per configuration:"]
     for k, m in sorted(means.items(), key=lambda kv: -kv[1]):
         low = f", 1% low {statistics.mean(lows[k]):.1f}" if k in lows else ""
-        out.append(f"#   {k}: {m:.1f} ({len(scores[k])} runs{low}){'  <- chosen' if k == best else ''}")
+        failed = f", {fails[k]} failed" if k in fails else ""
+        out.append(f"#   {k}: {m:.1f} ({len(scores[k])} runs{low}{failed}){'  <- chosen' if k == best else ''}")
+    out += [f"#   {k}: no successful run ({n} failed)" for k, n in fails.items() if k not in means]
     out += best.split()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, "w").write("\n".join(out) + "\n")
