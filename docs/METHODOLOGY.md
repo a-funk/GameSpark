@@ -2,7 +2,7 @@
 
 ## Benchmark runs (`bench/run.sh`)
 
-1. Refuses to start if another run or the game is active (`flock` on `/tmp/spark-gaming-bench.lock`).
+1. Refuses to start if another run or the game is active (`flock` on `/tmp/gamespark-bench.lock`).
 2. Optionally holds the lock files in `QUIET_LOCKS` so cron jobs skip their cycle during the run.
 3. Starts `bench/telemetry.py` (1 Hz: GPU utilization, power, graphics clock, temperature from `nvidia-smi`;
    CPU utilization overall, on the fast cores and on the rest, from `/proc/stat`).

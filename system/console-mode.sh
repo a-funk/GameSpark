@@ -6,10 +6,10 @@
 # Automatic login means anyone at the TV gets this desktop session.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$ROOT/lib/env.sh"
-USER_NAME=$(id -un); AUTOSTART=$HOME/.config/autostart/spark-gaming-console.desktop
+USER_NAME=$(id -un); AUTOSTART=$HOME/.config/autostart/gamespark-console.desktop
 case "${1:-}" in
   enable)
-    as_root sh -c "[ -f /etc/gdm3/custom.conf.spark-gaming.bak ] || cp /etc/gdm3/custom.conf /etc/gdm3/custom.conf.spark-gaming.bak; \
+    as_root sh -c "[ -f /etc/gdm3/custom.conf.gamespark.bak ] || cp /etc/gdm3/custom.conf /etc/gdm3/custom.conf.gamespark.bak; \
       grep -q '^AutomaticLoginEnable=true' /etc/gdm3/custom.conf || \
       sed -i 's/^\[daemon\]\$/[daemon]\nAutomaticLoginEnable=true\nAutomaticLogin=$USER_NAME/' /etc/gdm3/custom.conf"
     mkdir -p "$(dirname "$AUTOSTART")"
@@ -17,7 +17,7 @@ case "${1:-}" in
       "$ROOT/tools/steam-console.sh" > "$AUTOSTART"
     echo "enabled: autologin for $USER_NAME, autostart $AUTOSTART" ;;
   disable)
-    as_root sh -c "[ -f /etc/gdm3/custom.conf.spark-gaming.bak ] && cp /etc/gdm3/custom.conf.spark-gaming.bak /etc/gdm3/custom.conf"
+    as_root sh -c "[ -f /etc/gdm3/custom.conf.gamespark.bak ] && cp /etc/gdm3/custom.conf.gamespark.bak /etc/gdm3/custom.conf"
     rm -f "$AUTOSTART"; echo "disabled" ;;
   *) die "usage: $0 enable|disable" ;;
 esac

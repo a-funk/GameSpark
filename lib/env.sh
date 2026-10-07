@@ -1,4 +1,4 @@
-# Shared paths and helpers for spark-gaming scripts. Source it; every variable can be overridden from the environment.
+# Shared paths and helpers for GameSpark scripts. Source it; every variable can be overridden from the environment.
 # Defaults target Canonical's arm64 Steam snap on DGX OS (Ubuntu 24.04, GNOME on Xorg).
 
 : "${STEAM_HOME:=$HOME/snap/steam/common}"                 # snap's $HOME for Steam
@@ -7,7 +7,7 @@
 : "${STEAM_LOG:=$STEAM_ROOT/logs/console_log.txt}"
 : "${FEX_CONFIG_DIR:=$STEAM_HOME/fex_config}"
 : "${SNAP_TMP:=/tmp/snap-private-tmp/snap.steam/tmp}"      # where the snap (and FEX inside it) sees /tmp
-: "${SG_DATA:=$HOME/.local/share/spark-gaming}"            # run records, profiles, screenshots
+: "${SG_DATA:=$HOME/.local/share/gamespark}"            # run records, profiles, screenshots
 : "${QUIET_LOCKS:=}"                                       # colon-separated flock files held during runs (pause cron jobs)
 
 uid=$(id -u)

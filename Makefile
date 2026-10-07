@@ -1,5 +1,5 @@
 SPARK ?= toto-spark
-DEST  ?= spark-gaming
+DEST  ?= gamespark
 
 .PHONY: test deploy
 

@@ -7,9 +7,9 @@ IMG=$(cd "$(dirname "$1")" && pwd)/$(basename "$1"); shift
 ocr() {
   if command -v tesseract >/dev/null; then tesseract "$IMG" - "$@" 2>/dev/null
   else
-    docker image inspect spark-gaming-ocr >/dev/null 2>&1 || printf 'FROM ubuntu:24.04\nRUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr && rm -rf /var/lib/apt/lists/*\n' \
-      | docker build -q -t spark-gaming-ocr - >/dev/null
-    docker run --rm -v "$(dirname "$IMG"):/w:ro" spark-gaming-ocr tesseract "/w/$(basename "$IMG")" - "$@" 2>/dev/null
+    docker image inspect gamespark-ocr >/dev/null 2>&1 || printf 'FROM ubuntu:24.04\nRUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr && rm -rf /var/lib/apt/lists/*\n' \
+      | docker build -q -t gamespark-ocr - >/dev/null
+    docker run --rm -v "$(dirname "$IMG"):/w:ro" gamespark-ocr tesseract "/w/$(basename "$IMG")" - "$@" 2>/dev/null
   fi
 }
 if [ "${1:-}" = --find ]; then

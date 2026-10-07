@@ -1,4 +1,4 @@
-# spark-gaming
+# GameSpark
 
 Make Steam games run better on the NVIDIA DGX Spark (GB10), and measure every change.
 
@@ -38,7 +38,7 @@ Requirements: DGX OS (Ubuntu 24.04 arm64), the Steam snap (`sudo snap install st
 passwordless sudo or membership in the `docker` group (scripts fall back to a privileged container for root).
 
 ```bash
-git clone <this repo> ~/spark-gaming && cd ~/spark-gaming
+git clone <this repo> ~/gamespark && cd ~/gamespark
 make test                                   # offline checks
 
 system/scheduler.sh install                 # optional: scx_bpfland preferring the fast cores (helps many-thread games)
@@ -53,7 +53,7 @@ tools/steam-config.sh launch-options 1091500 "FEX_LIBRARYJITNAMING=1 PROTON_ENAB
 profile/profile.sh cyberpunk2077 my-label
 ```
 
-Run records land in `~/.local/share/spark-gaming/` (override with `SG_DATA`).
+Run records land in `~/.local/share/gamespark/` (override with `SG_DATA`).
 
 For DLSS in Cyberpunk use the launch options `PROTON_ENABLE_NVAPI=1 PROTON_ENABLE_NGX_UPDATER=1 %command%`
 and an x86-64 Proton (Experimental, 10 or 11), not the ARM64 Proton build.
@@ -79,3 +79,7 @@ and an x86-64 Proton (Experimental, 10 or 11), not the ARM64 Proton build.
 - `scx_lavd` crashes on GB10; `system/scheduler.sh` uses `scx_bpfland`.
 - Console mode turns on automatic login: anyone at the TV gets the desktop session.
 - Screenshots can include Steam friend notifications; check before sharing.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

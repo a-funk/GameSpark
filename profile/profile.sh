@@ -12,7 +12,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$ROOT/lib/env.sh"
 GAME=${1:?game}; L=${2:?label}; DELAY=${3:-50}; SECS=${4:-45}
 . "$ROOT/bench/games/$GAME.sh"
 OUT=$SG_DATA/profiles/$(date +%Y%m%d-%H%M%S)-$GAME-$L; mkdir -p "$OUT"
-DATA=/tmp/spark-gaming-$GAME-$L.perf
+DATA=/tmp/gamespark-$GAME-$L.perf
 
 "$ROOT/bench/run.sh" "$GAME" "prof-$L" > "$OUT/bench.log" 2>&1 &
 BENCH=$!

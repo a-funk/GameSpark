@@ -10,7 +10,7 @@ GAME=${1:?usage: run.sh GAME LABEL}; LABEL=${2:?usage: run.sh GAME LABEL}
 [ -f "$ROOT/bench/games/$GAME.sh" ] || die "no adapter bench/games/$GAME.sh"
 . "$ROOT/bench/games/$GAME.sh"
 
-exec 8>"${TMPDIR:-/tmp}/spark-gaming-bench.lock"; flock -n 8 || die "another benchmark run is active"
+exec 8>"${TMPDIR:-/tmp}/gamespark-bench.lock"; flock -n 8 || die "another benchmark run is active"
 pgrep -f "$GAME_PROC" >/dev/null && die "$GAME is already running"
 steam_running || die "Steam is not running (tools/steam-console.sh starts it)"
 hold_quiet_locks
