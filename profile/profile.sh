@@ -3,7 +3,7 @@
 #
 # FEX labels translated code with the x86 library it came from when FEX_LIBRARYJITNAMING=1 is in the game's
 # launch options (the Config.json key does not reach games inside Steam's container):
-#   tools/steam-launch-options.sh APPID "FEX_LIBRARYJITNAMING=1 <your other options> %command%"
+#   tools/steam-config.sh launch-options APPID "FEX_LIBRARYJITNAMING=1 <your other options> %command%"
 # perf samples every core; analyze.py resolves translated addresses through FEX's perf maps.
 #
 # Usage: profile/profile.sh GAME LABEL [DELAY_AFTER_GAME_START_S] [SECONDS]

@@ -30,6 +30,8 @@ echo "game pid $G after ${i}s"
 if [ "${PIN_FAST:-0}" = 1 ]; then
   for p in $(pgrep -f "$GAME_PROC"); do taskset -a -cp "$(fast_cpus)" "$p" >/dev/null; done; echo "pinned to $(fast_cpus)"
 fi
+# Games whose benchmark has no command-line switch: the adapter drives the menus and closes the game when done.
+declare -F game_drive >/dev/null && { game_drive "$OUT" "$G" > "$OUT/drive.log" 2>&1 & }
 for i in $(seq 1800); do pgrep -f "$GAME_PROC" >/dev/null || break; sleep 1; done
 date +%s > "$OUT/end"; sleep 3
 

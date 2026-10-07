@@ -47,7 +47,7 @@ controller/README.md                        # optional: Xbox controller over Blu
 QUIET_LOCKS=/path/to/cron.lock SHOT_AT=85 bench/run.sh cyberpunk2077 my-label
 
 # Per-layer CPU profile (needs FEX_LIBRARYJITNAMING=1 in the game's launch options):
-tools/steam-launch-options.sh 1091500 "FEX_LIBRARYJITNAMING=1 PROTON_ENABLE_NVAPI=1 %command%"
+tools/steam-config.sh launch-options 1091500 "FEX_LIBRARYJITNAMING=1 PROTON_ENABLE_NVAPI=1 %command%"
 profile/profile.sh cyberpunk2077 my-label
 ```
 
