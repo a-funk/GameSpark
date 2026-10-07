@@ -1,8 +1,9 @@
 #!/bin/bash
 # Per-game scheduler governor: watches for running games and applies each game's scheduler profile.
-# A profile is profiles/<game>.conf (SCHED=bpfland|default), where <game> names a bench/games/<game>.sh adapter
-# (its GAME_PROC pattern identifies the running game). No game running -> the kernel's default scheduler.
-# Measured: scx_bpfland -m performance is +10% in Cyberpunk 2077 and -3% in Rise of the Tomb Raider.
+# A profile is profiles/<setup>/<game>.conf (SCHED=bpfland|default), where <setup> is the running Steam (snap or
+# fex, see lib/env.sh) and <game> names a bench/games/<game>.sh adapter (its GAME_PROC pattern identifies the
+# running game). No game running -> the kernel's default scheduler. bench/tune.py writes profiles.
+# Measured: scx_bpfland -m performance is +10% in Cyberpunk 2077 on the snap, 0% on FEX 2610, -3% in Tomb Raider.
 #
 # Usage: system/governor.sh run          foreground loop (what the service runs)
 #        system/governor.sh install      systemd user service, starts now and at login
@@ -26,7 +27,8 @@ apply() {   # $1 = bpfland|default
 
 wanted() {  # scheduler for the first profiled game that is running, else default
   local conf game SCHED GAME_PROC
-  for conf in "$ROOT"/profiles/*.conf; do
+  for conf in "$ROOT"/profiles/"$(steam_setup)"/*.conf; do
+    [ -e "$conf" ] || continue
     game=$(basename "$conf" .conf); SCHED=default
     # shellcheck source=/dev/null
     . "$conf"
@@ -58,7 +60,8 @@ case "${1:-status}" in
     echo "service: $(systemctl --user is-active gamespark-governor.service 2>/dev/null)"
     echo "sched_ext: $(cat /sys/kernel/sched_ext/state) $(cat /sys/kernel/sched_ext/root/ops 2>/dev/null)"
     [ -e "$SG_DATA/governor.pause" ] && echo "paused ($SG_DATA/governor.pause)"
-    for c in "$ROOT"/profiles/*.conf; do echo "profile $(basename "$c" .conf): $(grep -h '^SCHED=' "$c")"; done ;;
+    echo "running Steam: $(steam_setup)"
+    for c in "$ROOT"/profiles/*/*.conf; do echo "profile $(basename "$(dirname "$c")")/$(basename "$c" .conf): $(grep -hv '^#' "$c" | xargs)"; done ;;
   set)
     case "${2:-}" in bpfland|default) apply "$2"; echo "scheduler: $2" ;; *) die "usage: $0 set bpfland|default" ;; esac ;;
   *) die "usage: $0 run|install|uninstall|status|set" ;;

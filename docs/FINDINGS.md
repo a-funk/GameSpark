@@ -124,12 +124,18 @@ NVIDIA's native arm64 `libGLX_nvidia`/`libnvidia-glcore`.
 | Game | Default scheduler | `scx_bpfland -m performance` | Effect |
 |---|---:|---:|---:|
 | Cyberpunk 2077 (19 job workers) | 53.9 | 59.3 | +10% |
+| Cyberpunk 2077 on FEX 2610 + native driver (autotuner, 2 runs each) | 67.9 | 67.9 | 0% |
 | Rise of the Tomb Raider DX12 (one dominant thread) | 135.3 | 131.1 | -3% |
 | Rise of the Tomb Raider DX11 | 128.9 | 125.4 | -3% |
 
 Games that spread work across many threads gain from keeping them on the fast cores; games limited by one
 main thread lose a little. `system/scheduler.sh` therefore stays opt-in, and the scheduler is a per-game
 setting for the autotuner to choose.
+
+The gain also depends on the Steam setup. With FEX 2610 and the native driver, Cyberpunk gains nothing from
+the scheduler. Measured fact: 0% vs +10% on the snap. Untested hypothesis: with less translated driver work
+per frame, the job workers no longer saturate the fast cores, so where they run matters less. Profiles are
+therefore kept per setup (`profiles/snap/`, `profiles/fex/`), and the governor reads the running Steam's set.
 
 ## Things that do not work yet
 

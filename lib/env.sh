@@ -1,9 +1,15 @@
 # shellcheck shell=bash
 # Shared paths and helpers for GameSpark scripts. Source it; every variable can be overridden from the environment.
 # Two Steam setups on DGX OS (Ubuntu 24.04, GNOME on Xorg), chosen with GAMESPARK_STEAM:
-#   snap (default)  Canonical's arm64 Steam snap with its bundled FEX
-#   fex             Valve's Steam launcher under a system FEX (system/fex-system.sh), sharing the snap's Steam folder
-: "${GAMESPARK_STEAM:=snap}"
+#   snap  Canonical's arm64 Steam snap with its bundled FEX
+#   fex   Valve's Steam launcher under a system FEX (system/fex-system.sh), sharing the snap's Steam folder
+# Unset: whichever is running, else snap.
+
+steam_setup() {   # the running Steam's setup: Valve's launcher runs as the system FEX binary
+  local p; p=$(pgrep -f "[u]buntu12_32/steam " | head -1)
+  if [ -n "$p" ] && [ "$(readlink "/proc/$p/exe")" = /usr/bin/FEX ]; then echo fex; else echo snap; fi
+}
+: "${GAMESPARK_STEAM:=$(steam_setup)}"
 if [ "$GAMESPARK_STEAM" = fex ]; then
   : "${STEAM_HOME:=$HOME}"
   : "${FEX_CONFIG_DIR:=${XDG_CONFIG_HOME:-$HOME/.config}/fex-emu}"

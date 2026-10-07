@@ -40,7 +40,9 @@ Steam downloads, shader pre-compilation and cron jobs all compete for the CPU; d
 - The winner is written to `profiles/GAME.conf` with every configuration's mean as comments, and applied: the
   adapter's `game_prepare` runs with the winning knobs (e.g. writes the registry), and the governor applies
   `SCHED` whenever the game runs.
-- A profile is specific to the Steam setup it was tuned on (`GAMESPARK_STEAM`, recorded in the header).
+- Profiles are per Steam setup (`profiles/snap/`, `profiles/fex/`; the running Steam is detected), because a
+  knob's effect can differ between them (the scheduler: Cyberpunk +10% on the snap, 0% on FEX 2610). The
+  Proton prefix is shared, so `bench/tune.py GAME --apply` re-applies adapter knobs after switching.
 
 ## CPU profiles (`profile/profile.sh`)
 

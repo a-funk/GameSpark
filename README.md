@@ -50,7 +50,8 @@ system/console-mode.sh enable               # optional: log in and open Steam Bi
 # Optional: system FEX 2610 with NVIDIA's native Vulkan driver, as a second Steam on the same library
 # (Cyberpunk +17%, Tomb Raider -7%; see docs/FINDINGS.md). Close Steam first.
 system/fex-system.sh install && system/fex-system.sh share-snap
-GAMESPARK_STEAM=fex tools/steam-console.sh  # export GAMESPARK_STEAM=fex for the commands below too
+GAMESPARK_STEAM=fex tools/steam-console.sh  # other commands detect which Steam is running
+system/console-mode.sh enable fex           # optional: boot into this Steam instead of the snap
 controller/README.md                        # optional: Xbox controller over Bluetooth
 
 # Benchmark (Steam running, game installed):
@@ -60,9 +61,10 @@ QUIET_LOCKS=/path/to/cron.lock SHOT_AT=85 bench/run.sh cyberpunk2077 my-label
 tools/steam-config.sh launch-options 1091500 "FEX_LIBRARYJITNAMING=1 PROTON_ENABLE_NVAPI=1 %command%"
 profile/profile.sh cyberpunk2077 my-label
 
-# Autotune: benchmark each combination of a game's options, write profiles/GAME.conf and apply it
+# Autotune: benchmark each combination of a game's options, write its profile and apply it
 bench/tune.py rottr --dry-run               # list the runs first (about 4 min each for this game)
-bench/tune.py rottr
+bench/tune.py rottr                         # writes profiles/<snap|fex>/rottr.conf for the running Steam
+bench/tune.py rottr --apply                 # re-apply after switching Steam setups (the game prefix is shared)
 ```
 
 Run records land in `~/.local/share/gamespark/` (override with `SG_DATA`).
@@ -77,7 +79,7 @@ and an x86-64 Proton (Experimental, 10 or 11), not the ARM64 Proton build.
 | `bench/run.sh`, `bench/games/*.sh` | Benchmark runner and per-game adapters (launch args, where results land) |
 | `bench/ingest.py` | Run record: avg and 1% low (rendered and displayed), telemetry for the benchmark window |
 | `bench/telemetry.py` | 1 Hz GPU/CPU sampler |
-| `bench/tune.py`, `profiles/` | Autotuner and the per-game profiles it writes |
+| `bench/tune.py`, `profiles/` | Autotuner and the per-game, per-Steam-setup profiles it writes |
 | `profile/` | perf + FEX perf-map profiler and the layer classifier |
 | `system/` | Per-game scheduler governor, system FEX setup, console mode, global scheduler installer |
 | `tools/` | Steam pipe helpers, launch-option editor, screenshots, GPU bandwidth probe |
