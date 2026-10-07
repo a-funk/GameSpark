@@ -114,6 +114,10 @@ def build(run, game, label):
     }
     if p.get("scenes"):
         doc["scenes"] = p["scenes"]
+    sched = os.path.join(run, "sched")
+    if os.path.exists(sched):  # "enabled bpfland_1.1.2_..." or "disabled"
+        words = open(sched).read().split()
+        doc["scheduler"] = words[1].split("_")[0] if len(words) > 1 and words[0] == "enabled" else "default"
     pts, w0 = thin(win), win[0]["ts"]
     doc["series"] = {"t": [round(r["ts"] - w0, 1) for r in pts], **{k: [r.get(k) for r in pts] for k in ("gpu", "power", "cpu", "cpu_x925", "clock")}}
     f = thin(fps_per_second(shown))

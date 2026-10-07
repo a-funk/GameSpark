@@ -27,6 +27,8 @@ steam_launch "$APPID" "$LAUNCH_ARGS" || die "Steam did not accept the launch"
 for i in $(seq 300); do G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break; sleep 1; done
 [ -z "${G:-}" ] && die "game never started"
 echo "game pid $G after ${i}s"
+# The governor (system/governor.sh) may switch schedulers once the game appears; record what the run used.
+(sleep 10; echo "$(cat /sys/kernel/sched_ext/state 2>/dev/null) $(cat /sys/kernel/sched_ext/root/ops 2>/dev/null)" > "$OUT/sched") &
 if [ "${PIN_FAST:-0}" = 1 ]; then
   for p in $(pgrep -f "$GAME_PROC"); do taskset -a -cp "$(fast_cpus)" "$p" >/dev/null; done; echo "pinned to $(fast_cpus)"
 fi
