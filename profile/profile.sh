@@ -10,13 +10,14 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$ROOT/lib/env.sh"
 GAME=${1:?game}; L=${2:?label}; DELAY=${3:-50}; SECS=${4:-45}
+# shellcheck source=/dev/null
 . "$ROOT/bench/games/$GAME.sh"
 OUT=$SG_DATA/profiles/$(date +%Y%m%d-%H%M%S)-$GAME-$L; mkdir -p "$OUT"
 DATA=/tmp/gamespark-$GAME-$L.perf
 
 "$ROOT/bench/run.sh" "$GAME" "prof-$L" > "$OUT/bench.log" 2>&1 &
 BENCH=$!
-for i in $(seq 300); do G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break; sleep 1; done
+for _ in $(seq 300); do G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break; sleep 1; done
 [ -z "${G:-}" ] && { wait $BENCH; cat "$OUT/bench.log"; die "game never started"; }
 echo "game pid $G; sampling in ${DELAY}s for ${SECS}s"
 sleep "$DELAY"

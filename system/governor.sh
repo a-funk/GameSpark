@@ -27,7 +27,9 @@ wanted() {  # scheduler for the first profiled game that is running, else defaul
   local conf game SCHED GAME_PROC
   for conf in "$ROOT"/profiles/*.conf; do
     game=$(basename "$conf" .conf); SCHED=default
+    # shellcheck source=/dev/null
     . "$conf"
+    # shellcheck source=/dev/null
     GAME_PROC=$(. "$ROOT/bench/games/$game.sh"; echo "$GAME_PROC")
     pgrep -f "$GAME_PROC" >/dev/null && { echo "$SCHED $game"; return; }
   done

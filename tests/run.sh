@@ -3,7 +3,9 @@
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd); cd "$ROOT" || exit 1
 fail=0
-for f in $(git ls-files '*.sh' 2>/dev/null || find . -name '*.sh'); do
+mapfile -t SH < <(git ls-files '*.sh' 2>/dev/null)
+[ ${#SH[@]} -gt 0 ] || mapfile -t SH < <(find . -name '*.sh' -not -path './.git/*')
+for f in "${SH[@]}"; do
   bash -n "$f" || { echo "syntax: $f"; fail=1; }
 done
 for t in bench/ingest.py profile/analyze.py tools/steamcfg.py tools/winereg.py; do
@@ -12,5 +14,5 @@ done
 for f in bench/telemetry.py bench/cyberpunk2077_settings.py controller/xbox-watch.py tools/xinput.py; do
   python3 -I -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$f" || { echo "parse: $f"; fail=1; }
 done
-if command -v shellcheck >/dev/null; then shellcheck -S warning $(git ls-files '*.sh') || fail=1; fi
+if command -v shellcheck >/dev/null; then shellcheck -x -S warning "${SH[@]}" && echo "ok   shellcheck" || fail=1; fi
 [ $fail = 0 ] && echo "all checks passed"; exit $fail

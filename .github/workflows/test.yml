@@ -1,0 +1,8 @@
+name: test
+on: [push, pull_request]
+jobs:
+  offline-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tests/run.sh

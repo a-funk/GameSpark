@@ -8,6 +8,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/lib/env.sh"
 GAME=${1:?usage: run.sh GAME LABEL}; LABEL=${2:?usage: run.sh GAME LABEL}
 [ -f "$ROOT/bench/games/$GAME.sh" ] || die "no adapter bench/games/$GAME.sh"
+# shellcheck source=/dev/null
 . "$ROOT/bench/games/$GAME.sh"
 
 exec 8>"${TMPDIR:-/tmp}/gamespark-bench.lock"; flock -n 8 || die "another benchmark run is active"

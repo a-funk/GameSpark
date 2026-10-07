@@ -15,7 +15,7 @@ esac
 SP=$(pgrep -f "[u]buntu12_32/steam " | head -1)
 if [ -n "$SP" ]; then
   steam_cmd -shutdown
-  for i in $(seq 120); do kill -0 "$SP" 2>/dev/null || break; sleep 1; done
+  for _ in $(seq 120); do kill -0 "$SP" 2>/dev/null || break; sleep 1; done
   kill -0 "$SP" 2>/dev/null && die "Steam did not exit"
 fi
 python3 -I "$ROOT/tools/steamcfg.py" "$WHAT" "$CFG" "$APP" "$VAL"

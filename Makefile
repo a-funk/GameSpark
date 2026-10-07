@@ -1,4 +1,4 @@
-SPARK ?= toto-spark
+SPARK ?= spark          # ssh host of your DGX Spark
 DEST  ?= gamespark
 
 .PHONY: test deploy

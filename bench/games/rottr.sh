@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034  # variables are read by bench/run.sh
 # Rise of the Tomb Raider (Foundation engine): DirectX 11 via DXVK or DirectX 12 via VKD3D-Proton. Sourced by bench/run.sh.
 #
 # The Windows build has no command-line benchmark switch and writes no results file, so game_drive selects
@@ -34,7 +35,7 @@ game_drive() {  # $1 run dir, $2 game pid
   python3 -I "$ROOT/tools/xinput.py" key Up sleep:1 Return
   date +%s > "$out/bench_start"
   sleep 120                 # three scenes take about 2.5 min; avoid screenshot/OCR load while they run
-  for i in $(seq 60); do
+  for _ in $(seq 60); do
     "$ROOT/tools/shot.sh" "$out/results.png" >/dev/null
     "$ROOT/tools/ocr.sh" "$out/results.png" > "$out/results.txt"
     grep -q "Overall score" "$out/results.txt" && break

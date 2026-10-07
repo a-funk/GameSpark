@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034  # variables are read by bench/run.sh
 # Cyberpunk 2077 (REDengine, DirectX 12 -> VKD3D-Proton). Sourced by bench/run.sh.
 # Built-in benchmark launch recipe from the Phoronix Test Suite cyberpunk2077 profile.
 APPID=1091500
