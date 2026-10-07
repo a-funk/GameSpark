@@ -1,12 +1,22 @@
 # Shared paths and helpers for GameSpark scripts. Source it; every variable can be overridden from the environment.
-# Defaults target Canonical's arm64 Steam snap on DGX OS (Ubuntu 24.04, GNOME on Xorg).
-
-: "${STEAM_HOME:=$HOME/snap/steam/common}"                 # snap's $HOME for Steam
+# Two Steam setups on DGX OS (Ubuntu 24.04, GNOME on Xorg), chosen with GAMESPARK_STEAM:
+#   snap (default)  Canonical's arm64 Steam snap with its bundled FEX
+#   fex             Valve's Steam launcher under a system FEX (system/fex-system.sh), sharing the snap's Steam folder
+: "${GAMESPARK_STEAM:=snap}"
+if [ "$GAMESPARK_STEAM" = fex ]; then
+  : "${STEAM_HOME:=$HOME}"
+  : "${FEX_CONFIG_DIR:=${XDG_CONFIG_HOME:-$HOME/.config}/fex-emu}"
+  : "${SNAP_TMP:=/tmp}"
+  : "${STEAM_START:=FEX /bin/bash /usr/lib/steam/bin_steam.sh}"
+else
+  : "${STEAM_HOME:=$HOME/snap/steam/common}"               # snap's $HOME for Steam
+  : "${FEX_CONFIG_DIR:=$STEAM_HOME/fex_config}"
+  : "${SNAP_TMP:=/tmp/snap-private-tmp/snap.steam/tmp}"    # where the snap (and FEX inside it) sees /tmp
+  : "${STEAM_START:=snap run steam}"
+fi
 : "${STEAM_ROOT:=$STEAM_HOME/.local/share/Steam}"
 : "${STEAM_PIPE:=$STEAM_HOME/.steam/steam.pipe}"            # the snap launcher drops CLI args; commands go through this pipe
 : "${STEAM_LOG:=$STEAM_ROOT/logs/console_log.txt}"
-: "${FEX_CONFIG_DIR:=$STEAM_HOME/fex_config}"
-: "${SNAP_TMP:=/tmp/snap-private-tmp/snap.steam/tmp}"      # where the snap (and FEX inside it) sees /tmp
 : "${SG_DATA:=$HOME/.local/share/gamespark}"            # run records, profiles, screenshots
 : "${QUIET_LOCKS:=}"                                       # colon-separated flock files held during runs (pause cron jobs)
 

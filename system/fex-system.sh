@@ -5,7 +5,7 @@
 # (docs/FINDINGS.md). Steps follow Mitchell Augustin's fex_autoinstall proof of concept
 # (https://github.com/MitchellAugustin/fex_autoinstall), reimplemented here.
 #
-# Usage: system/fex-system.sh install|status|uninstall
+# Usage: system/fex-system.sh install|share-snap|status|uninstall
 #   Launch Steam afterwards with: FEXBash steam   (or GAMESPARK_STEAM=fex tools/steam-console.sh)
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$ROOT/lib/env.sh"
@@ -80,6 +80,19 @@ case "${1:-status}" in
     echo "RootFS: $(ls "$ROOTFS_DIR" 2>/dev/null | tr '\n' ' ')"
     echo "Config: $(cat "$FEX_CFG/Config.json" 2>/dev/null)"
     FEXGetConfig --tso-emulation-info 2>/dev/null | sed 's/^/TSO: /' ;;
+  share-snap)
+    # Run Valve's launcher (under this FEX) on the snap's Steam folder: same login, library, Proton prefixes and
+    # settings, so only FEX differs between the two setups. Only one of the two Steams may run at a time.
+    SNAP_STEAM=$HOME/snap/steam/common/.local/share/Steam
+    [ -d "$SNAP_STEAM" ] || die "no snap Steam folder at $SNAP_STEAM"
+    pgrep -f "[u]buntu12_32/steam " >/dev/null && die "close Steam first"
+    if [ ! -L "$HOME/.local/share/Steam" ]; then
+      [ -e "$HOME/.local/share/Steam" ] && mv "$HOME/.local/share/Steam" "$HOME/.local/share/Steam.fex-own"
+      ln -s "$SNAP_STEAM" "$HOME/.local/share/Steam"
+    fi
+    mkdir -p "$HOME/.steam"
+    cp "$HOME/snap/steam/common/.steam/registry.vdf" "$HOME/.steam/registry.vdf"   # remembered account name for auto-login
+    echo "Steam folder: $(readlink "$HOME/.local/share/Steam")" ;;
   uninstall)
     as_root sh -c "apt-get remove -y -qq fex-emu-$VARIANT fex-emu-wine steam-launcher >/dev/null; add-apt-repository -y -r ppa:fex-emu/fex >/dev/null; \
       rm -f /etc/apparmor.d/steam /etc/apparmor.d/FEX /etc/apparmor.d/FEXBash /etc/apparmor.d/bwrap"
