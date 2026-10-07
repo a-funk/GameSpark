@@ -97,5 +97,5 @@ case "${1:-status}" in
     as_root sh -c "apt-get remove -y -qq fex-emu-$VARIANT fex-emu-wine steam-launcher >/dev/null; add-apt-repository -y -r ppa:fex-emu/fex >/dev/null; \
       rm -f /etc/apparmor.d/steam /etc/apparmor.d/FEX /etc/apparmor.d/FEXBash /etc/apparmor.d/bwrap"
     echo "Removed packages and profiles. RootFS and config left in $ROOTFS_DIR and $FEX_CFG (delete by hand)." ;;
-  *) die "usage: $0 install|status|uninstall" ;;
+  *) die "usage: $0 install|share-snap|status|uninstall" ;;
 esac
