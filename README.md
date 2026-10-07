@@ -7,9 +7,9 @@ CPU is ARM: every Windows game runs through three translators (FEX for x86 code,
 DXVK or VKD3D-Proton for DirectX). This repo holds the tools to see where that costs time, the fixes that
 measurably help, and the data.
 
-**Status:** early. Tested on one Spark with Canonical's arm64 Steam snap. Results so far are for
-Cyberpunk 2077; Rise of the Tomb Raider (DirectX 11 vs 12) and Red Dead Redemption 2 (Vulkan vs DirectX 12)
-are next.
+**Status:** early. Tested on one Spark with Canonical's arm64 Steam snap. Results so far cover
+Cyberpunk 2077 (DirectX 12) and Rise of the Tomb Raider (DirectX 11 vs 12); Red Dead Redemption 2
+(Vulkan vs DirectX 12) is next.
 
 ## Results so far
 
@@ -19,14 +19,16 @@ Cyberpunk 2077 built-in benchmark, 1080p, High, ray tracing off ([details](docs/
 |---|---:|---:|
 | Default | 49.0 | 25.1 |
 | + DLSS Quality | 50.7 | 26.5 |
-| + `scx_bpfland` scheduler (`system/scheduler.sh`) | 57.5-59.3 | 32.4-34.5 |
+| + `scx_bpfland` scheduler (`system/scheduler.sh`) | 59.3 (vs 53.9 default, clean) | 34.5 |
 | + DLSS frame generation 2x | **100.4 shown** (50.2 rendered) | 58.0 shown |
 
 What we learned:
 
 - Games are **CPU-bound by translation**, not GPU-bound: the GPU sits ~60% busy and DLSS upscaling adds 3%.
-- **Core placement** is the biggest system-wide win so far: steering game threads to the Cortex-X925 cores
-  gives +12-14%.
+- **Core placement** helps games that spread work over many threads (+10% in Cyberpunk) and costs a little in
+  games limited by one main thread (-3% in Rise of the Tomb Raider), so the scheduler is a per-game choice.
+- **DirectX 12 translates more cheaply than DirectX 11**: in Rise of the Tomb Raider, VKD3D costs 5% of the
+  game's CPU vs 37% for DXVK, and DX12 runs 4.5% faster with half the CPU.
 - In Cyberpunk, **63% of the game's CPU time is its own translated code** and 23% is kernel context switching;
   NVIDIA's emulated driver plus VKD3D is only ~7%.
 
@@ -39,7 +41,7 @@ passwordless sudo or membership in the `docker` group (scripts fall back to a pr
 git clone <this repo> ~/spark-gaming && cd ~/spark-gaming
 make test                                   # offline checks
 
-system/scheduler.sh install                 # scx_bpfland preferring the fast cores, persistent
+system/scheduler.sh install                 # optional: scx_bpfland preferring the fast cores (helps many-thread games)
 system/console-mode.sh enable               # optional: log in and open Steam Big Picture at boot
 controller/README.md                        # optional: Xbox controller over Bluetooth
 

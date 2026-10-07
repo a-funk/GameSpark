@@ -26,6 +26,7 @@ Built-in benchmark, 1080p, High preset with ray tracing off, unless noted. Run-t
 | E2 | B1 + game pinned to the X925 cores after launch | 58.6 | 29.8 | 62% |
 | E4a | B1 + `scx_bpfland -m performance` (no pinning) | 57.5 | 32.4 | 62% |
 | C1 | E4a again through `bench/run.sh`, cron burst held off | 59.3 | 34.5 | 62% |
+| D1, D2 | E4a settings, default scheduler, cron burst held off | 53.7, 54.1 | 27.2, 31.0 | 56% |
 | E9 | E4a + `WINE_CPU_TOPOLOGY` showing only the X925 cores | 55.1 | | |
 | E8a | E4a + DLSS frame generation 2x | **100.4 shown** / 50.2 rendered | 58.0 shown | 73% |
 
@@ -33,9 +34,10 @@ What the numbers say:
 
 1. **The game is CPU-bound, not GPU-bound.** The GPU sits around 60% busy, and DLSS upscaling cuts its work
    without raising fps (+3%).
-2. **Core placement is the first real win.** By default the scheduler puts much of the game's work on the slower
-   A725 cores. Steering it to the X925 cores gives +12-14%, whether by pinning or by `scx_bpfland`, which does it
-   system-wide without per-game setup.
+2. **Core placement is the first real win for this game.** By default the scheduler puts much of the game's work
+   on the slower A725 cores. Steering it to the X925 cores gives +10% measured cleanly (59.3 vs 53.9 fps with
+   `scx_bpfland`; manual pinning is similar). The earlier B1/E1 baselines overlapped a cron burst, which
+   overstated the gain as +12-14%. It is not a universal win: see the scheduler section below.
 3. **Hiding cores hurts.** Showing the game only the 10 fast cores cut context switching sharply but lost 8%:
    the game's 19 job workers do real work.
 4. **Frame generation doubles displayed fps** (100 fps) at a cost of about 7 rendered fps. The responsiveness is
@@ -64,6 +66,50 @@ What the numbers say:
 - Turning TSO emulation off (`FEX_TSOENABLED=0`, ceiling test only) makes Cyberpunk hang while loading, as
   expected for a heavily multithreaded engine, so that ceiling cannot be measured directly.
 
+## Rise of the Tomb Raider: DirectX 11 (DXVK) vs DirectX 12 (VKD3D-Proton)
+
+Windows build under Proton Experimental, built-in benchmark (three scenes), 1080p, default settings with VSync
+off, `scx_bpfland` active, warm shader caches. The results screen is read with OCR (no results file exists).
+
+| API path | Runs (overall fps) | Mean | Mountain Peak | Syria | Geothermal Valley |
+|---|---|---:|---:|---:|---:|
+| DX11 via DXVK | 125.7, 125.1, 125.3 | 125.4 | 199.3 | 92.1 | 80.4 |
+| DX12 via VKD3D-Proton | 131.1, 131.1, 131.2 | **131.1** | 193.4 | 94.4 | 99.7 |
+
+Per-layer CPU profiles of the same runs:
+
+| | DX11 | DX12 |
+|---|---:|---:|
+| Game's share of all machine CPU samples | 38.4% | 17.5% |
+| Game code (translated) | 39.1% | 66.9% |
+| Translation layer (DXVK / VKD3D) | **36.7%** | **5.0%** |
+| Wine / Proton | 8.8% | 7.3% |
+| NVIDIA driver, x86 build under FEX | 8.1% | 8.0% |
+| Kernel | 5.5% | 10.7% |
+
+- **DX12 is the thinner translation.** It maps closely onto Vulkan, so VKD3D costs 5% of the game's CPU. DX11
+  needs DXVK's state tracking on its command-stream thread (`dxvk-cs`, 26.6% of game CPU), and the DX11 path
+  uses twice the CPU for 4.5% fewer frames. Prefer DX12 when a game offers both.
+- **For DX11 games the translation stack is over half of the game's CPU** (DXVK + emulated NVIDIA driver +
+  Wine). Running those natively (Vulkan thunking, ARM64EC builds) is worth far more for DX11 titles than for
+  Cyberpunk.
+- **The first run after switching APIs compiles pipelines mid-benchmark:** the first DX12 run scored 102.7 fps
+  with a 1.27 fps minimum in Syria. Discard warm-up runs.
+- The very first DX11 run (game's first launch) scored 83.1; Steam pre-compiles Vulkan shaders for this game
+  before first launch, but the game's own caches still warm up on the first run.
+
+## The scheduler is a per-game choice
+
+| Game | Default scheduler | `scx_bpfland -m performance` | Effect |
+|---|---:|---:|---:|
+| Cyberpunk 2077 (19 job workers) | 53.9 | 59.3 | +10% |
+| Rise of the Tomb Raider DX12 (one dominant thread) | 135.3 | 131.1 | -3% |
+| Rise of the Tomb Raider DX11 | 128.9 | 125.4 | -3% |
+
+Games that spread work across many threads gain from keeping them on the fast cores; games limited by one
+main thread lose a little. `system/scheduler.sh` therefore stays opt-in, and the scheduler is a per-game
+setting for the autotuner to choose.
+
 ## Things that do not work yet
 
 - **FEX Vulkan thunking inside Steam's container.** Setting `Vulkan: 1` has no effect for games: inside
@@ -72,6 +118,8 @@ What the numbers say:
 - **`scx_lavd`** panics on GB10 (`cpu_order.rs:433` unwrap on missing CPU cluster information, scx 1.1.2).
 - **`preempt=full` at runtime**: Secure Boot puts the kernel in `lockdown=integrity`, which denies
   `/sys/kernel/debug/sched/preempt`. It needs the kernel command line and a reboot.
+- **Occasional startup crash:** one Cyberpunk launch crashed 5 s into loading (`CrashInfo.json`, not OOM);
+  the next two launches with identical settings ran normally. The runner reports it as a failed run.
 - **Kernel anti-cheat** games (EAC or BattlEye online modes, League of Legends) do not run under Proton.
 
 ## Background load matters
