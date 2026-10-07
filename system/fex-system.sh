@@ -23,25 +23,34 @@ install_packages() {
 }
 
 install_rootfs_and_config() {
-  env -u DISPLAY -u WAYLAND_DISPLAY FEXRootFSFetcher -y -x   # without a display it asks nothing (with one, zenity prompts on the TV)
-  local fs; fs=$(ls "$ROOTFS_DIR" | grep -v '\.sqsh$' | head -1)
-  [ -n "$fs" ] || die "FEXRootFSFetcher produced no RootFS directory in $ROOTFS_DIR"
+  local sqsh fs
+  sqsh=$(ls "$ROOTFS_DIR"/*.sqsh 2>/dev/null | head -1)
+  if [ -z "$sqsh" ]; then
+    # Headless (with a display it prompts and shows a progress window on the TV); keep the image compressed.
+    env -u DISPLAY -u WAYLAND_DISPLAY FEXRootFSFetcher -y -a
+    sqsh=$(ls "$ROOTFS_DIR"/*.sqsh 2>/dev/null | head -1)
+  fi
+  [ -n "$sqsh" ] || die "FEXRootFSFetcher produced no image in $ROOTFS_DIR"
+  fs=$(basename "$sqsh" .sqsh)
+  # Extracted, because the DLSS step writes NVIDIA's x86 libraries into it.
+  [ -d "$ROOTFS_DIR/$fs" ] || unsquashfs -q -d "$ROOTFS_DIR/$fs" "$sqsh" >/dev/null
   mkdir -p "$FEX_CFG"
   [ -f "$FEX_CFG/Config.json" ] && cp "$FEX_CFG/Config.json" "$FEX_CFG/Config.json.bak-$(date +%s)"
   # Unlisted options keep FEX's built-in defaults; graphics calls go to the native arm64 driver.
   printf '{"Config":{"RootFS":"%s"},"ThunksDB":{"Vulkan":1,"GL":1}}\n' "$fs" > "$FEX_CFG/Config.json"
 }
 
-# Ubuntu 24.04 restricts unprivileged user namespaces; Steam's container (bwrap) and FEXBash need them.
+# Ubuntu 24.04 restricts unprivileged user namespaces; Steam (running as /usr/bin/FEX), its container (bwrap)
+# and FEXBash need them.
 install_apparmor() {
   local p
-  for p in steam:/usr/bin/steam FEXBash:/usr/bin/FEXBash bwrap:/{usr/,}bin/bwrap; do
+  for p in steam:/usr/bin/steam FEX:/usr/bin/FEX FEXBash:/usr/bin/FEXBash bwrap:/{usr/,}bin/bwrap; do
     printf 'abi <abi/4.0>,\ninclude <tunables/global>\nprofile %s %s flags=(unconfined) {\n  userns,\n  include if exists <local/%s>\n}\n' \
       "${p%%:*}" "${p#*:}" "${p%%:*}" > "$TMP/${p%%:*}"
   done
-  chmod 644 "$TMP"/steam "$TMP"/FEXBash "$TMP"/bwrap
-  as_root sh -c "cp $TMP/steam $TMP/FEXBash $TMP/bwrap /etc/apparmor.d/ && \
-    apparmor_parser -r /etc/apparmor.d/steam /etc/apparmor.d/FEXBash /etc/apparmor.d/bwrap"
+  chmod 644 "$TMP"/steam "$TMP"/FEX "$TMP"/FEXBash "$TMP"/bwrap
+  as_root sh -c "cp $TMP/steam $TMP/FEX $TMP/FEXBash $TMP/bwrap /etc/apparmor.d/ && \
+    apparmor_parser -r /etc/apparmor.d/steam /etc/apparmor.d/FEX /etc/apparmor.d/FEXBash /etc/apparmor.d/bwrap"
 }
 
 # DLSS under Proton needs NVIDIA's x86 NGX DLLs and libraries inside the RootFS, matching the host driver.
@@ -73,7 +82,7 @@ case "${1:-status}" in
     FEXGetConfig --tso-emulation-info 2>/dev/null | sed 's/^/TSO: /' ;;
   uninstall)
     as_root sh -c "apt-get remove -y -qq fex-emu-$VARIANT fex-emu-wine steam-launcher >/dev/null; add-apt-repository -y -r ppa:fex-emu/fex >/dev/null; \
-      rm -f /etc/apparmor.d/steam /etc/apparmor.d/FEXBash /etc/apparmor.d/bwrap"
+      rm -f /etc/apparmor.d/steam /etc/apparmor.d/FEX /etc/apparmor.d/FEXBash /etc/apparmor.d/bwrap"
     echo "Removed packages and profiles. RootFS and config left in $ROOTFS_DIR and $FEX_CFG (delete by hand)." ;;
   *) die "usage: $0 install|status|uninstall" ;;
 esac
