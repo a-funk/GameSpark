@@ -40,9 +40,10 @@ What we learned:
   Cyberpunk on top of +5% from the newer FEX; neutral in Tomb Raider, where FEX 2610 itself is 7% slower.
 - In Cyberpunk, **63% of the game's CPU time is its own translated code** and 23% is kernel context switching;
   NVIDIA's emulated driver plus VKD3D is only ~7%.
-- **A cheap Win32 call can be the bottleneck.** The Witcher 3 asks "am I online?" ten times a second; Wine answers
-  by re-reading every network interface ~80 times, which takes 35 ms translated. A 2 s cache in a tiny proxy DLL
-  removes the stutter (55-63 to 88 fps average, 1% low 17-20 to 63).
+- **A cheap Win32 call can be the bottleneck.** The Witcher 3 asks "am I online?" ten times a second. Wine answers
+  by re-reading every network interface it has ever seen, and keeps every short-lived Docker container's interface
+  (~80 by then, 11 real), which took 35 ms. A 2 s cache in a tiny proxy DLL removes the stutter (55-63 to 88 fps
+  average, 1% low 17-20 to 63).
 
 ## Quick start
 
@@ -102,7 +103,7 @@ in `profiles/launch/`.
 | `tools/launch.sh`, `profiles/launch/` | Steam launch wrapper and per-game launch settings (env, executable swap, args) |
 | `lib/menu.sh`, `tests/menu-replay.sh` | OCR-gated menu steps for adapters, and their replay test on saved screenshots |
 | `system/frametimes.sh` | Builds the arm64 MangoHud layer used by `bench/run.sh FRAMES=SECS` |
-| `shim/`, `system/shim.sh` | Proxy DLL that caches Win32 calls Wine makes slow, and its per-game installer |
+| `shim/`, `system/shim.sh` | Proxy DLL that caches Win32 calls Wine makes slow, its per-game installer, and a reproducer for the Wine cost (`igcs_cost.c`) |
 | `profile/` | perf + FEX perf-map profiler and the layer classifier |
 | `system/` | Per-game scheduler governor, system FEX setup, console mode, global scheduler installer |
 | `tools/` | Steam pipe helpers, launch-option editor, keyboard/mouse and virtual gamepad input, screenshots, GPU probe |

@@ -3,9 +3,10 @@
  * forwarders), so no game or Proton file is changed: system/shim.sh install copies it next to the game's exe and
  * profiles/launch/<appid>.env sets WINEDLLOVERRIDES=<name>=n,b.
  *
- * Cached: wininet!InternetGetConnectedState. Wine answers it with a full GetAdaptersAddresses (dozens of nsiproxy
- * round-trips, each re-reading every host interface over netlink); Windows answers from a cached network state.
- * The Witcher 3 calls it about 10 times a second on its main thread: a ~35 ms stall every ~100 ms on the GB10.
+ * Cached: wininet!InternetGetConnectedState. Wine answers it by building the full adapter list twice, reading
+ * /proc/net/dev once per interface it has ever seen (nsiproxy never forgets one, so container churn grows the list;
+ * shim/igcs_cost.c measures it). The Witcher 3 calls it about 10 times a second on its main thread: a ~35 ms stall
+ * every ~100 ms on the GB10.
  * Build: make shim (x86_64-w64-mingw32-gcc). Self-check: none needed beyond the frame-time run that measures it. */
 #include <windows.h>
 #include <psapi.h>
