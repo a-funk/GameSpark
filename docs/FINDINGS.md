@@ -115,6 +115,11 @@ NVIDIA's native arm64 `libGLX_nvidia`/`libnvidia-glcore`.
   +29%.
 - **Tomb Raider: about 7% slower than the snap**, and thunking is neutral for it. The loss comes from FEX 2610 or
   its environment, not the driver. Copying the snap's FEX settings into the new config changed nothing (126.0).
+- **Keep FEX 2610's default settings.** With the snap's settings (which turn off memory-ordering emulation for
+  vector and memcpy accesses), 2 of 9 Tomb Raider DX12 runs crashed shortly after starting the benchmark: an
+  access violation in `ROTTR.exe` and an invalid handle in `ntdll` (the game's crashpad minidumps). With the
+  defaults that `system/fex-system.sh` writes, 0 of 7 DX12 runs and 0 of 15 tuning runs crashed. Suggestive,
+  not proven (2/9 vs 0/7 is not statistically significant); the defaults cost nothing in speed.
 - The first run after switching drivers rebuilds the driver's shader cache (111-118 fps); count the second.
 - So the best setup is per game, like the scheduler. FEX can turn thunking off per executable (AppConfig), but
   the FEX version is per Steam install.
@@ -124,7 +129,9 @@ NVIDIA's native arm64 `libGLX_nvidia`/`libnvidia-glcore`.
 | Game | Default scheduler | `scx_bpfland -m performance` | Effect |
 |---|---:|---:|---:|
 | Cyberpunk 2077 (19 job workers) | 53.9 | 59.3 | +10% |
-| Cyberpunk 2077 on FEX 2610 + native driver (autotuner, 2 runs each) | 67.9 | 67.9 | 0% |
+| Cyberpunk 2077 on FEX 2610 + native driver (autotuner, 2 runs each) | 68.2 | 68.3 | 0% |
+| Rise of the Tomb Raider DX12 on FEX 2610 (autotuner) | 125.3 | 115.2 | -8% |
+| Rise of the Tomb Raider DX11 on FEX 2610 (autotuner) | 121.6 | 117.1 | -4% |
 | Rise of the Tomb Raider DX12 (one dominant thread) | 135.3 | 131.1 | -3% |
 | Rise of the Tomb Raider DX11 | 128.9 | 125.4 | -3% |
 
@@ -133,7 +140,7 @@ main thread lose a little. `system/scheduler.sh` therefore stays opt-in, and the
 setting for the autotuner to choose.
 
 The gain also depends on the Steam setup. With FEX 2610 and the native driver, Cyberpunk gains nothing from
-the scheduler. Measured fact: 0% vs +10% on the snap. Untested hypothesis: with less translated driver work
+the scheduler. Measured fact: 0% vs +10% on the snap; Tomb Raider loses more there (-8% on DX12). Untested hypothesis: with less translated driver work
 per frame, the job workers no longer saturate the fast cores, so where they run matters less. Profiles are
 therefore kept per setup (`profiles/snap/`, `profiles/fex/`), and the governor reads the running Steam's set.
 
