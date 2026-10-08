@@ -139,12 +139,37 @@ Getting there took five fixes, each now built into the adapter or documented in 
   runner retries launches (`LAUNCH_RETRIES`, `game_abort`).
 - **Software rendering.** `system/fex-system.sh` installs Mesa's Vulkan drivers, so the host loader also lists
   llvmpipe. DXVK and VKD3D skip software devices; RDR2 does not, and its Safe config picked it (7.9 fps, GPU at 3%).
-  `VK_LOADER_DRIVERS_SELECT=*nvidia*` in the launch options hides the other drivers.
+  `VK_LOADER_DRIVERS_SELECT=*nvidia*` hides the other drivers; `lib/env.sh` sets it for every game the FEX Steam
+  starts.
 - **NVAPI must stay on.** With `PROTON_DISABLE_NVAPI=1` the game sees an NVIDIA GPU, then polls for
   `nvapi64.dll` forever (about 1,400 lookups a second, each a full scan of `system32`; found with perf and strace).
 - **Vulkan crashes.** RDR2's own Vulkan renderer on the GB10 through FEX's Vulkan thunking crashes during init
   (access violation in `RDR2.exe`); with NVAPI hidden it hangs instead. It ran only on llvmpipe. DX12 works, so the
   Vulkan vs DX12 comparison is blocked on this, not yet measured.
+
+## Frame times through FEX (MangoHud)
+
+Games without a built-in benchmark (Divinity: Original Sin 2, The Witcher 3) need an external frame-time source.
+MangoHud works, with two adjustments found with `VK_LOADER_DEBUG` in the Proton log:
+
+- With FEX's Vulkan thunking the game's Vulkan calls run through the native arm64 loader, so the layer must be the
+  arm64 build, and it must load inside Steam's container, which lacks its spdlog/fmt dependencies.
+  `system/frametimes.sh` copies it with those libraries next to it.
+- pressure-vessel sets `VK_IMPLICIT_LAYER_PATH` inside the container (to a directory that does not even exist
+  there), which makes the loader ignore `VK_ADD_IMPLICIT_LAYER_PATH`. Setting `VK_IMPLICIT_LAYER_PATH` itself inside
+  the container works; `tools/launch.sh` does that for `CONTAINER_` settings, which `bench/run.sh FRAMES=SECS` uses.
+
+First capture: DOS2's main menu at 60.0 fps (1% low 58.3), the display-rate cap.
+
+## Controllers under Proton
+
+- **DualSense pairing.** With the Bluetooth adapter set non-pairable, BlueZ pairs without storing a bond and then
+  rejects the controller's input ("Rejected connection from !bonded device"): it connects but never shows up as an
+  input device. `controller/pair.sh` makes the adapter pairable for the run and pairs with an agent.
+- **DualSense in XInput-only games.** Proton hands DualSense pads to games as raw HID (hidraw), which older games
+  that only read XInput ignore: in DOS2 player 2 could not press Start to join. `PROTON_DISABLE_HIDRAW=0x054c/0x0ce6`
+  makes Wine's SDL backend present the pad as an XInput controller (Wine's `+hid` trace shows a `WINEXINPUT` device);
+  it is in `profiles/launch/435150.env`. The value is matched in lowercase.
 
 ## The scheduler is a per-game choice
 

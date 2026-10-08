@@ -22,6 +22,10 @@
 - **Telemetry means** cover only the benchmark window: from the result file's write time minus the benchmark
   length, to the write time.
 
+- **Frame captures** (`FRAMES=SECS`): MangoHud logs every frame's time for SECS seconds, starting `FRAMES_DELAY`
+  seconds after the game's first frame; averages and 1% lows come from those frame times. What the window shows
+  is up to the adapter (a menu scene, a cutscene, a saved position); without menu driving it is the main menu.
+
 ## Repeatability
 
 Two identical runs (B1, E1) differed by 2.2%. Treat differences under ~3% as noise unless repeated.

@@ -54,13 +54,20 @@ system/console-mode.sh enable               # optional: log in and open Steam Bi
 system/fex-system.sh install && system/fex-system.sh share-snap
 GAMESPARK_STEAM=fex tools/steam-console.sh  # other commands detect which Steam is running
 system/console-mode.sh enable fex           # optional: boot into this Steam instead of the snap
-controller/README.md                        # optional: Xbox controller over Bluetooth
+controller/pair.sh                          # optional: pair an Xbox or PS5 controller (see controller/README.md)
+
+# Once per game: launch through GameSpark's wrapper, which applies profiles/launch/<appid>.env (launcher skips,
+# controller and DLSS fixes) and per-run settings, so they change without editing Steam's launch options again.
+tools/steam-config.sh launch-options 1091500 "$PWD/tools/launch.sh %command%"
 
 # Benchmark (Steam running, game installed):
 QUIET_LOCKS=/path/to/cron.lock SHOT_AT=85 bench/run.sh cyberpunk2077 my-label
 
-# Per-layer CPU profile (needs FEX_LIBRARYJITNAMING=1 in the game's launch options):
-tools/steam-config.sh launch-options 1091500 "FEX_LIBRARYJITNAMING=1 PROTON_ENABLE_NVAPI=1 %command%"
+# Frame times for any game, including games without a built-in benchmark (MangoHud through FEX):
+system/frametimes.sh install
+FRAMES=60 bench/run.sh dos2 my-label        # 60 s of frame times; the record gets true 1% lows
+
+# Per-layer CPU profile (FEX's JIT labels are switched on for the run through tools/launch.sh):
 profile/profile.sh cyberpunk2077 my-label
 
 # Autotune: benchmark each combination of a game's options, write its profile and apply it
@@ -71,8 +78,8 @@ bench/tune.py rottr --apply                 # re-apply after switching Steam set
 
 Run records land in `~/.local/share/gamespark/` (override with `SG_DATA`).
 
-For DLSS in Cyberpunk use the launch options `PROTON_ENABLE_NVAPI=1 PROTON_ENABLE_NGX_UPDATER=1 %command%`
-and an x86-64 Proton (Experimental, 10 or 11), not the ARM64 Proton build.
+DLSS needs an x86-64 Proton (Experimental, 10 or 11), not the ARM64 Proton build; the NVAPI settings it needs are
+in `profiles/launch/`.
 
 ## Layout
 
@@ -82,10 +89,13 @@ and an x86-64 Proton (Experimental, 10 or 11), not the ARM64 Proton build.
 | `bench/ingest.py` | Run record: avg and 1% low (rendered and displayed), telemetry for the benchmark window |
 | `bench/telemetry.py` | 1 Hz GPU/CPU sampler |
 | `bench/tune.py`, `profiles/` | Autotuner and the per-game, per-Steam-setup profiles it writes |
+| `tools/launch.sh`, `profiles/launch/` | Steam launch wrapper and per-game launch settings (env, executable swap, args) |
+| `lib/menu.sh`, `tests/menu-replay.sh` | OCR-gated menu steps for adapters, and their replay test on saved screenshots |
+| `system/frametimes.sh` | Builds the arm64 MangoHud layer used by `bench/run.sh FRAMES=SECS` |
 | `profile/` | perf + FEX perf-map profiler and the layer classifier |
 | `system/` | Per-game scheduler governor, system FEX setup, console mode, global scheduler installer |
-| `tools/` | Steam pipe helpers, launch-option editor, screenshots, GPU bandwidth probe |
-| `controller/` | Xbox controller Bluetooth fix and pairing script |
+| `tools/` | Steam pipe helpers, launch-option editor, keyboard/mouse and virtual gamepad input, screenshots, GPU probe |
+| `controller/` | Bluetooth pairing for Xbox and PlayStation controllers, and the BlueZ settings they need |
 | `results/` | Run and profile records behind the numbers in this README |
 | `docs/` | Findings and methodology |
 
@@ -97,6 +107,8 @@ and an x86-64 Proton (Experimental, 10 or 11), not the ARM64 Proton build.
 - `scx_lavd` crashes on GB10; `system/scheduler.sh` uses `scx_bpfland`.
 - Console mode turns on automatic login: anyone at the TV gets the desktop session.
 - Screenshots can include Steam friend notifications; check before sharing.
+- Steam's udev rules have no entry for Xbox controllers over Bluetooth, so Steam cannot open them through hidraw and
+  falls back to a generic mapping (D-pad problems in Big Picture). Not fixed yet.
 
 ## License
 
