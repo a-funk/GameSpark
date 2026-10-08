@@ -228,7 +228,7 @@ The underlying cost is in Wine: `InternetGetConnectedState` has no cache, each i
 containers, VMs or VPNs come and go while a game polls this call accumulates entries. On x86 the translated part
 would be faster; the kernel part would not (not measured). Wine does not accept LLM-generated code (its Developer
 FAQ and Clean Room Guidelines), so this project reports the cause, a reproducer and the candidate fixes upstream
-rather than a patch.
+rather than a patch: [Wine bug 60465](https://bugs.winehq.org/show_bug.cgi?id=60465).
 
 Not measured yet: XeSS vs DLSS and the scheduler for this game (`TUNE_KNOBS` in the adapter). Today's autotuner
 sessions overlapped another workload's GPU use (now detected; such runs are discarded) and a Steam Cloud sync
