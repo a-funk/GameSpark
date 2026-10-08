@@ -2,8 +2,9 @@
 # Steam launch options for GameSpark-managed games (set once per game; Steam must be restarted to change them):
 #   /path/to/gamespark/tools/launch.sh %command%
 # Every launch then applies, without touching Steam's config:
-#   profiles/launch/<appid>.env   the game's own settings (in this repo), e.g. PROTON_DISABLE_HIDRAW=..., or
-#                                 SWAP_FROM / SWAP_TO to start a different executable (skip a launcher)
+#   profiles/launch/<appid>.env   the game's own settings (in this repo), e.g. PROTON_DISABLE_HIDRAW=...,
+#                                 SWAP_FROM / SWAP_TO to start a different executable (skip a launcher), or
+#                                 EXTRA_ARGS=... appended to the game's command line (split on spaces)
 #   $SG_DATA/launch/run.env       settings for every game while a benchmark run is active (bench/run.sh writes and
 #                                 removes it), e.g. MangoHud frame-time logging
 # Both are KEY=VALUE lines (no quotes needed; # comments allowed). A CONTAINER_ prefix sets the variable inside Steam's
@@ -27,10 +28,12 @@ args=("$@")
 if [ -n "${SWAP_FROM:-}" ] && [ -n "${SWAP_TO:-}" ]; then
   for i in "${!args[@]}"; do [[ ${args[$i]} == *"$SWAP_FROM" ]] && args[i]=${args[$i]%"$SWAP_FROM"}$SWAP_TO; done
 fi
+# shellcheck disable=SC2206  # EXTRA_ARGS is a space-separated list by design
+[ -n "${EXTRA_ARGS:-}" ] && args+=($EXTRA_ARGS)
 if [ ${#inner[@]} -gt 0 ]; then   # before the Proton script, i.e. inside the container
   for i in "${!args[@]}"; do
     [[ ${args[$i]} == */proton ]] && { args=("${args[@]:0:i}" env "${inner[@]}" "${args[@]:i}"); break; }
   done
 fi
-mkdir -p "$D" && echo "$(date '+%F %T') app $app applied: ${applied[*]:-none}${SWAP_TO:+ (exe -> $SWAP_TO)}${inner[*]:+ (in container: ${inner[*]})}" >> "$D/launches.log"
+mkdir -p "$D" && echo "$(date '+%F %T') app $app applied: ${applied[*]:-none}${SWAP_TO:+ (exe -> $SWAP_TO)}${inner[*]:+ (in container: ${inner[*]})}${EXTRA_ARGS:+ (args: $EXTRA_ARGS)}" >> "$D/launches.log"
 exec "${args[@]}"
