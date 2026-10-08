@@ -1,8 +1,9 @@
 #!/bin/bash
 # Per-layer CPU profile of one benchmark run: which part of the stack the game's CPU time goes to.
 #
-# FEX labels translated code with the x86 library it came from when FEX_LIBRARYJITNAMING=1 is in the game's
-# launch options (the Config.json key does not reach games inside Steam's container):
+# FEX labels translated code with the x86 library it came from when FEX_LIBRARYJITNAMING=1 reaches the game (the
+# Config.json key does not reach games inside Steam's container). Games launched through tools/launch.sh get it for
+# this run only; otherwise put it in the launch options:
 #   tools/steam-config.sh launch-options APPID "FEX_LIBRARYJITNAMING=1 <your other options> %command%"
 # perf samples every core; analyze.py resolves translated addresses through FEX's perf maps.
 #
@@ -15,7 +16,7 @@ GAME=${1:?game}; L=${2:?label}; DELAY=${3:-50}; SECS=${4:-45}
 OUT=$SG_DATA/profiles/$(date +%Y%m%d-%H%M%S)-$GAME-$L; mkdir -p "$OUT"
 DATA=/tmp/gamespark-$GAME-$L.perf
 
-"$ROOT/bench/run.sh" "$GAME" "prof-$L" > "$OUT/bench.log" 2>&1 &
+RUN_ENV_EXTRA="FEX_LIBRARYJITNAMING=1 ${RUN_ENV_EXTRA:-}" "$ROOT/bench/run.sh" "$GAME" "prof-$L" > "$OUT/bench.log" 2>&1 &
 BENCH=$!
 for _ in $(seq 300); do G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break; sleep 1; done
 [ -z "${G:-}" ] && { wait $BENCH; cat "$OUT/bench.log"; die "game never started"; }

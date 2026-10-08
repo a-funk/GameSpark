@@ -7,6 +7,8 @@
 #                    the game's first frame; needs system/frametimes.sh install and the game's Steam launch options
 #                    set to tools/launch.sh %command%. Adapters without their own benchmark use this; the run ends
 #                    (game_stop, else the game is killed) when MangoHud finishes its log.
+#        RUN_ENV_EXTRA="K=V ..."  more settings for this run's launch (through tools/launch.sh), e.g. the profiler's
+#                    FEX_LIBRARYJITNAMING=1
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/lib/env.sh"
@@ -32,6 +34,10 @@ if [ -n "${FRAMES:-}" ]; then
   mkdir -p "$SG_DATA/launch" "$OUT/frames"
   printf 'MANGOHUD=1\nMANGOHUD_CONFIG=no_display,autostart_log=%s,log_duration=%s,output_folder=%s\nCONTAINER_VK_IMPLICIT_LAYER_PATH=%s:/usr/lib/pressure-vessel/overrides/share/vulkan/implicit_layer.d\n' \
     "${FRAMES_DELAY:-30}" "$FRAMES" "$OUT/frames" "$SG_DATA/vklayers" > "$RUN_ENV"
+fi
+if [ -n "${RUN_ENV_EXTRA:-}" ]; then
+  mkdir -p "$SG_DATA/launch"
+  for kv in $RUN_ENV_EXTRA; do echo "$kv" >> "$RUN_ENV"; done
 fi
 python3 -I "$ROOT/bench/telemetry.py" "$OUT/telemetry.jsonl" 8>&- & TEL=$!
 date +%s > "$OUT/start"

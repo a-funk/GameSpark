@@ -67,8 +67,7 @@ QUIET_LOCKS=/path/to/cron.lock SHOT_AT=85 bench/run.sh cyberpunk2077 my-label
 system/frametimes.sh install
 FRAMES=60 bench/run.sh dos2 my-label        # 60 s of frame times; the record gets true 1% lows
 
-# Per-layer CPU profile (needs FEX_LIBRARYJITNAMING=1 in the game's launch options):
-tools/steam-config.sh launch-options 1091500 "FEX_LIBRARYJITNAMING=1 PROTON_ENABLE_NVAPI=1 %command%"
+# Per-layer CPU profile (FEX's JIT labels are switched on for the run through tools/launch.sh):
 profile/profile.sh cyberpunk2077 my-label
 
 # Autotune: benchmark each combination of a game's options, write its profile and apply it
