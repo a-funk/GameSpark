@@ -7,7 +7,7 @@
  * /proc/net/dev once per interface it has ever seen (nsiproxy never forgets one, so container churn grows the list;
  * shim/igcs_cost.c measures it). The Witcher 3 calls it about 10 times a second on its main thread: a ~35 ms stall
  * every ~100 ms on the GB10.
- * Build: make shim (x86_64-w64-mingw32-gcc). Self-check: none needed beyond the frame-time run that measures it. */
+ * Build: system/shim.sh install APPID. Check: shim/shim_check.c (polls at 10 Hz with the shim loaded, reports the worst call). */
 #include <windows.h>
 #include <psapi.h>
 #include <string.h>
@@ -15,20 +15,38 @@
 #define TTL_MS 2000   /* how stale "connected?" may be; a cable pull or Wi-Fi drop shows up within this */
 
 static BOOL (WINAPI *real_igcs)(LPDWORD, DWORD);
-static volatile ULONGLONG cached_at;
 static volatile LONG64 cached;   /* bit 62: valid, bit 32: return value, low 32 bits: flags */
+
+static void refresh(void)
+{
+    DWORD f = 0;
+    BOOL r = real_igcs(&f, 0);
+    cached = (1LL << 62) | ((LONG64)(r != 0) << 32) | f;
+}
+
+/* Refreshing on the game's thread would still stall it once per TTL (one 17-24 ms frame every 2.1 s measured), so a
+ * background thread pays Wine's cost instead. */
+static DWORD WINAPI refresher(void *unused)
+{
+    (void)unused;
+    for (;;)
+    {
+        Sleep(TTL_MS);
+        refresh();
+    }
+    return 0;
+}
 
 static BOOL WINAPI cached_igcs(LPDWORD flags, DWORD reserved)
 {
-    ULONGLONG now = GetTickCount64();
+    static volatile LONG started;
     LONG64 c = cached;
-    if (!c || now - cached_at >= TTL_MS)
+    if (reserved) return real_igcs(flags, reserved);   /* Windows fails these; keep that */
+    if (!c)
     {
-        DWORD f = 0;
-        BOOL r = real_igcs(&f, reserved);
-        c = (1LL << 62) | ((LONG64)(r != 0) << 32) | f;
-        cached = c;      /* ponytail: two threads may both refresh at expiry; the answers are equivalent */
-        cached_at = now;
+        refresh();   /* the first call answers directly; ponytail: racing first calls each refresh once */
+        c = cached;
+        if (!InterlockedExchange(&started, 1)) CloseHandle(CreateThread(NULL, 0, refresher, NULL, 0, NULL));
     }
     if (flags) *flags = (DWORD)c;
     return (BOOL)((c >> 32) & 1);

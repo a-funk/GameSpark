@@ -18,8 +18,9 @@ if command -v x86_64-w64-mingw32-gcc >/dev/null; then
   t=${TMPDIR:-/tmp}/gamespark-shim-test
   x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -shared -o "$t.dll" shim/shim.c shim/powrprof.def -lpsapi \
     && x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -mwindows -o "$t.exe" shim/igcs_cost.c -lwininet -liphlpapi \
+    && x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -mwindows -o "$t-check.exe" shim/shim_check.c -lwininet -lpowrprof \
     && echo "ok   shim" || fail=1
-  rm -f "$t.dll" "$t.exe"
+  rm -f "$t.dll" "$t.exe" "$t-check.exe"
 fi
 if command -v shellcheck >/dev/null; then shellcheck -x -S warning "${SH[@]}" && echo "ok   shellcheck" || fail=1; fi
 [ $fail = 0 ] && echo "all checks passed"; exit $fail

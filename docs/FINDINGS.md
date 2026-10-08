@@ -193,31 +193,42 @@ How it was traced:
 5. **Where the ~81 came from.** Another workload started and removed 634 Docker containers on the host's `docker0`
    bridge today, most of them between 08:10 and 10:10 (up to 97 in ten minutes), the hours of these runs. Each
    container's network interface existed for about a second, long enough for the game's 10 Hz polling to add it to nsiproxy's
-   list for good. `shim/igcs_cost.c` reproduces it outside the game. In a fresh Proton Experimental prefix it
-   measured once, polled at 10 Hz like the game while 70 containers ran (`docker run --rm alpine true`), and
-   measured again in the same session:
+   list for good. `shim/igcs_cost.c` reproduces it outside the game. In a fresh prefix it measured once, polled at
+   10 Hz like the game while 70 containers ran (`docker run --rm alpine true`), and measured again in the same
+   session. Upstream Wine (WineHQ's 11.19 Ubuntu build, run under FEX) behaves the same as Proton:
 
-   | | Adapters `GetAdaptersAddresses` returns | `InternetGetConnectedState` per call |
-   |---|---:|---:|
-   | Fresh session (11 host interfaces) | 11 | 7.0 ms |
-   | After 70 containers came and went | 100 | 45.4 ms |
+   | Wine | Session | Adapters `GetAdaptersAddresses` returns | `InternetGetConnectedState` per call |
+   |---|---|---:|---:|
+   | Wine 11.19 | Fresh (11 host interfaces) | 11 | 5.0 ms |
+   | Wine 11.19 | After 70 containers came and went | 115 | 39.8 ms |
+   | Proton Experimental 11.0 | Fresh | 11 | 7.0 ms |
+   | Proton Experimental 11.0 | After 70 containers came and went | 100 | 45.4 ms |
 
-   89 of the 100 adapters no longer existed. A native read of `/proc/net/dev` takes 0.059 ms here (the Realtek
-   driver's counter dump is most of it), so at 100 entries about half of each call is kernel time and the rest is
-   Wine's translated code. Without container churn the call costs 5-7 ms (two fresh sessions). The game's
-   frame times on a quiet host without the shim were not measured.
+   At the end, all but 11 of the adapters no longer existed. A native read of `/proc/net/dev` takes 0.059 ms here
+   (the Realtek driver's counter dump is most of it), so after the churn roughly half to two thirds of each call is
+   kernel time and the rest is Wine's translated code. The game's frame times on a quiet host without the shim
+   were not measured.
 
-The fix caches the answer for 2 s at the game's import of `InternetGetConnectedState`. `shim/shim.c` is a small x86
+The fix caches the answer at the game's import of `InternetGetConnectedState`. `shim/shim.c` is a small x86
 Windows DLL built with mingw-w64 on the Spark, loaded as a proxy for `powrprof.dll` (the game imports one function
 from it, which Wine passes straight to `ntdll`, so the proxy forwards it there and never loads the real DLL). On
 load it patches the import tables of the modules already loaded. No game or Proton file is modified; the shim is
 one added file next to the executable, switched on by `WINEDLLOVERRIDES` in `profiles/launch/292030.env`, and Wine
 falls back to its own `powrprof` if the file is missing.
 
+The first version refreshed the cached answer on the game's own thread when it was 2 s old, which left one slow
+frame (17-24 ms against 11 ms) every 2.1 s in the measured run. The shim now refreshes it on a background thread
+every 2 s, so the game's thread never waits for Wine. `shim/shim_check.c` polls at 10 Hz for 7 s with the shim
+loaded and fails if any call takes 1 ms or more. Under Wine 11.19 the slowest call was 8.6 ms with the first
+version and 0.003 ms with the background refresh. In the game, at the same save, the 2.1 s cadence is gone: 87.3
+fps, 1% low 63.8 (`results/witcher3/r04-shim-async.json`), with the few remaining slow frames in two bursts.
+
 The underlying cost is in Wine: `InternetGetConnectedState` has no cache, each interface enumeration reads
 `/proc/net/dev` once per known interface, and nsiproxy never drops interfaces that are gone. Any Linux host where
-containers, VMs or VPNs come and go while a game polls this call accumulates entries. On x86 the translated half
-would be faster; the kernel half would not (not measured). Fixing it upstream would fix every game that polls it.
+containers, VMs or VPNs come and go while a game polls this call accumulates entries. On x86 the translated part
+would be faster; the kernel part would not (not measured). Wine does not accept LLM-generated code (its Developer
+FAQ and Clean Room Guidelines), so this project reports the cause, a reproducer and the candidate fixes upstream
+rather than a patch.
 
 Not measured yet: XeSS vs DLSS and the scheduler for this game (`TUNE_KNOBS` in the adapter). Today's autotuner
 sessions overlapped another workload's GPU use (now detected; such runs are discarded) and a Steam Cloud sync
