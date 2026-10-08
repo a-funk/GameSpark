@@ -4,7 +4,8 @@
   python3 -I tools/xinput.py click X Y [BUTTON]          BUTTON 1 left (default), 2 middle, 3 right
   python3 -I tools/xinput.py key KEY [KEY ...]       X keysym names: Down, Up, Return, Escape, Tab, a, F1 ...;
                                                      combos with +: Alt_L+Tab
-                                                     KEY*N repeats (Down*3); "sleep:0.5" pauses between keys
+                                                     KEY*N repeats (Down*3); KEY~S holds S seconds (x~1);
+                                                     "sleep:0.5" pauses between keys
   python3 -I tools/xinput.py activate TITLE|0xID     bring a window to the front (e.g. a sign-in dialog hidden
                                                      behind Big Picture); TITLE = exact name from xwininfo -tree
 Uses libX11/libXtst through ctypes (activate also needs xwininfo for titles). DISPLAY/XAUTHORITY come from the env.
@@ -71,6 +72,7 @@ def main(argv):
                 if spec.startswith("sleep:"):
                     time.sleep(float(spec[6:]))
                     continue
+                spec, _, hold = spec.partition("~")
                 name, _, n = spec.partition("*")
                 codes = []
                 for part in name.split("+"):  # combos: Alt_L+Tab, Control_L+a
@@ -82,6 +84,7 @@ def main(argv):
                 for _ in range(int(n or 1)):
                     for c in codes:
                         T.XTestFakeKeyEvent(d, c, 1, 0); X.XFlush(d); time.sleep(0.06)
+                    time.sleep(float(hold or 0))
                     for c in reversed(codes):
                         T.XTestFakeKeyEvent(d, c, 0, 0); X.XFlush(d); time.sleep(0.06)
                     time.sleep(0.2)
