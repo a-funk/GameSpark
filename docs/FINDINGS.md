@@ -263,6 +263,38 @@ their scene by menu driving start the log themselves once the scene is on screen
   makes Wine's SDL backend present the pad as an XInput controller (Wine's `+hid` trace shows a `WINEXINPUT` device);
   it is in `profiles/launch/435150.env`. The value is matched in lowercase.
 
+## The Xbox controller in Big Picture: 32-bit Steam misreads evdev under FEX
+
+An Xbox Series controller over Bluetooth worked in games but not in Steam Big Picture: left and right did nothing
+and scrolling was erratic. A DualSense worked everywhere. How it was traced:
+
+1. **Controller and kernel are fine.** Raw Bluetooth reports (hidraw) and evdev events both showed every stick at
+   full range (0-65535), the D-pad and the buttons.
+2. **Steam read the Xbox pad through evdev** (`path: sdl://N`, `Interface: -1` in `logs/controller.txt`). Its
+   hidraw node was root-only: Valve's `60-steam-input.rules` grants hidraw only for the Elite 2 over Bluetooth. The
+   DualSense's hidraw is granted, and Steam held it.
+3. **Reproduced without hands.** A uinput twin of the pad (same name, IDs, axes and ranges) was registered by
+   Steam, which loaded the Big Picture layout (`controller_base/basicui_gamepad.vdf`). No stick, D-pad or button
+   moved Big Picture's interface, under both the FEX 2610 and the snap Steam, while the keyboard did.
+4. **Cause.** The Steam client (`ubuntu12_32/steam`) is a 32-bit x86 program. On a 32-bit task Linux returns
+   `struct input_event` in its 16-byte 32-bit form, but FEX runs 32-bit x86 code inside a 64-bit ARM process,
+   so the kernel returns the 24-byte form. FEX's 32-bit syscall layer converts input ioctls but not `read()`.
+   `controller/evdev32_check.py` runs a 40-byte `read()` from a static 32-bit x86 program under FEX 2610. It gets
+   one 24-byte D-pad event (type 3, code 16, value 1), which a 32-bit program decodes as type 2221, code 12. Every
+   evdev event is misread. Games are unaffected because 64-bit Wine reads the pad itself.
+5. **Why the DualSense works.** Steam reads it as raw HID, which is a byte stream with no such layout. The snap
+   Steam's sandbox has no hidraw access, so the snap reads both pads through evdev (it held `event7` and `event8`
+   and no hidraw node); the DualSense in the snap's Big Picture was not tested.
+
+Fix: `controller/60-gamespark-xbox-hidraw.rules` grants the desktop user hidraw access to Xbox controllers over
+Bluetooth, installed by `system/fex-system.sh controllers` (and `install`). The FEX Steam then holds `hidraw0` and
+no evdev node, as for the DualSense. A uhid twin built from the real controller's report descriptor showed it
+working: the D-pad moved the selection right, down, up and back left. The snap Steam cannot use the rule, so
+console mode boots the FEX Steam (`system/console-mode.sh enable fex`). Wired Xbox pads (kernel `xpad`, no hidraw)
+still go through evdev and would show the same problem in the FEX Steam (not tested). The proper fix is in FEX:
+converting `input_event` on reads (and on uinput writes) for 32-bit guests. When `controller/evdev32_check.py`
+starts exiting 0, the rule is no longer needed.
+
 ## The scheduler is a per-game choice
 
 | Game | Default scheduler | `scx_bpfland -m performance` | Effect |
