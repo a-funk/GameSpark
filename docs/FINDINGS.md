@@ -139,7 +139,8 @@ Getting there took five fixes, each now built into the adapter or documented in 
   runner retries launches (`LAUNCH_RETRIES`, `game_abort`).
 - **Software rendering.** `system/fex-system.sh` installs Mesa's Vulkan drivers, so the host loader also lists
   llvmpipe. DXVK and VKD3D skip software devices; RDR2 does not, and its Safe config picked it (7.9 fps, GPU at 3%).
-  `VK_LOADER_DRIVERS_SELECT=*nvidia*` in the launch options hides the other drivers.
+  `VK_LOADER_DRIVERS_SELECT=*nvidia*` hides the other drivers; `lib/env.sh` sets it for every game the FEX Steam
+  starts.
 - **NVAPI must stay on.** With `PROTON_DISABLE_NVAPI=1` the game sees an NVIDIA GPU, then polls for
   `nvapi64.dll` forever (about 1,400 lookups a second, each a full scan of `system32`; found with perf and strace).
 - **Vulkan crashes.** RDR2's own Vulkan renderer on the GB10 through FEX's Vulkan thunking crashes during init

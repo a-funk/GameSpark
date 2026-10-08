@@ -16,6 +16,10 @@ if [ "$GAMESPARK_STEAM" = fex ]; then
   : "${FEX_CONFIG_DIR:=${XDG_CONFIG_HOME:-$HOME/.config}/fex-emu}"
   : "${SNAP_TMP:=/tmp}"
   : "${STEAM_START:=FEX /bin/bash /usr/lib/steam/bin_steam.sh}"
+  # system/fex-system.sh installs Mesa's Vulkan drivers, so the loader also lists llvmpipe and friends. DXVK and
+  # VKD3D skip software devices but games that pick an adapter themselves need not (RDR2 ran on llvmpipe at 8 fps).
+  # Steam started from here passes this to every game.
+  export VK_LOADER_DRIVERS_SELECT="${VK_LOADER_DRIVERS_SELECT:-*nvidia*}"
 else
   : "${STEAM_HOME:=$HOME/snap/steam/common}"               # snap's $HOME for Steam
   : "${FEX_CONFIG_DIR:=$STEAM_HOME/fex_config}"
