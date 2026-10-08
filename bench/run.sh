@@ -65,9 +65,20 @@ steam_notice_ok() {
   # shellcheck disable=SC2086  # "x y"
   python3 -I "$ROOT/tools/xinput.py" click $xy >/dev/null
 }
-steam_prompt() {  # the step Steam is waiting on for this app, if its latest launch line (after line $1) is a wait
+# "Unable to Sync" (a failed Steam Cloud sync) offers "Play anyway", which can cost the player's saved progress:
+# always Cancel, which leaves the saves alone and makes Steam sync again; this run fails, the next launch is normal.
+steam_sync_cancel() {
+  local png=$OUT/steam-sync.png xy
+  if "$ROOT/tools/shot.sh" "$png" >/dev/null && "$ROOT/tools/ocr.sh" "$png" | grep -q "Unable to Sync" \
+     && xy=$("$ROOT/tools/ocr.sh" "$png" --find 'Cancel'); then
+    # shellcheck disable=SC2086  # "x y"
+    python3 -I "$ROOT/tools/xinput.py" click $xy >/dev/null
+  fi
+  die "Steam could not sync $GAME's saves with Steam Cloud; cancelled the launch (saves untouched)"
+}
+steam_prompt() {  # what Steam waits on for this app (step and argument), if its latest launch line (after $1) is a wait
   tail -n +"$(( $1 + 1 ))" "$STEAM_LOG" | grep -E "AppID $APPID, " | tail -1 \
-    | grep -oE "waiting for user response to [A-Za-z]+" | awk '{print $NF}'
+    | grep -oE 'waiting for user response to [A-Za-z]+ "[^"]*"' | cut -d' ' -f6-
 }
 
 # Launchers can stall before starting the game (RDR2's Rockstar launcher at sign-in): adapters set LAUNCH_RETRIES,
@@ -78,10 +89,11 @@ for attempt in $(seq "${LAUNCH_RETRIES:-1}"); do
   for i in $(seq "${LAUNCH_WAIT:-300}"); do
     G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break
     # Steam also logs brief waits for its own steps (CreatingProcess, ProcessingShaderCache), which continue by
-    # themselves; only these two are dialogs.
+    # themselves; only these three are dialogs.
     case $(steam_prompt "$seen") in
-      ShowInterstitials) steam_notice_ok && seen=$(wc -l < "$STEAM_LOG") ;;
-      ShowEula) die "Steam wants $GAME's EULA accepted before it launches; accept it once at the TV" ;;
+      ShowInterstitials*) steam_notice_ok && seen=$(wc -l < "$STEAM_LOG") ;;
+      ShowEula*) die "Steam wants $GAME's EULA accepted before it launches; accept it once at the TV" ;;
+      *'"syncfailed"') steam_sync_cancel ;;
     esac
     sleep 1
   done
