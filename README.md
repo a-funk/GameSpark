@@ -7,9 +7,9 @@ CPU is ARM: every Windows game runs through three translators (FEX for x86 code,
 DXVK or VKD3D-Proton for DirectX). This repo holds the tools to see where that costs time, the fixes that
 measurably help, and the data.
 
-**Status:** early. Tested on one Spark with Canonical's arm64 Steam snap. Results so far cover
-Cyberpunk 2077 (DirectX 12) and Rise of the Tomb Raider (DirectX 11 vs 12); Red Dead Redemption 2
-(Vulkan vs DirectX 12) is next.
+**Status:** early. Tested on one Spark with Canonical's arm64 Steam snap and a system FEX. Results so far cover
+Cyberpunk 2077 (DirectX 12), Rise of the Tomb Raider (DirectX 11 vs 12), Red Dead Redemption 2 (DirectX 12) and
+The Witcher 3 (DirectX 12, measured at a player's save).
 
 ## Results so far
 
@@ -25,6 +25,10 @@ Cyberpunk 2077 built-in benchmark, 1080p, High, ray tracing off ([details](docs/
 
 Red Dead Redemption 2 (FEX 2610 setup, DX12, 1080p, the game's Safe defaults, VSync off): **74.7-76.0 fps**.
 
+The Witcher 3 (FEX 2610 setup, DX12, 1080p, auto-detected settings, Novigrad save, VSync off): **55-63 fps with a
+35 ms stall ten times a second; 88.1 fps, 1% low 63.2, with `system/shim.sh`**, which caches one Win32 call the game
+polls and Wine makes expensive ([details](docs/FINDINGS.md#the-witcher-3-a-10-hz-am-i-online-check)).
+
 What we learned:
 
 - Games are **CPU-bound by translation**, not GPU-bound: the GPU sits ~60% busy and DLSS upscaling adds 3%.
@@ -36,6 +40,10 @@ What we learned:
   Cyberpunk on top of +5% from the newer FEX; neutral in Tomb Raider, where FEX 2610 itself is 7% slower.
 - In Cyberpunk, **63% of the game's CPU time is its own translated code** and 23% is kernel context switching;
   NVIDIA's emulated driver plus VKD3D is only ~7%.
+- **A cheap Win32 call can be the bottleneck.** The Witcher 3 asks "am I online?" ten times a second. Wine answers
+  by re-reading every network interface it has ever seen, and keeps every short-lived Docker container's interface
+  (~80 by then, 11 real), which took 35 ms. A 2 s cache in a tiny proxy DLL removes the stutter (55-63 to 88 fps
+  average, 1% low 17-20 to 63).
 
 ## Quick start
 
@@ -67,6 +75,9 @@ QUIET_LOCKS=/path/to/cron.lock SHOT_AT=85 bench/run.sh cyberpunk2077 my-label
 system/frametimes.sh install
 FRAMES=60 bench/run.sh dos2 my-label        # 60 s of frame times; the record gets true 1% lows
 
+# Win32 call cache for games whose profiles/launch/<appid>.env has a SHIM= line (builds with mingw-w64):
+system/shim.sh install 292030               # The Witcher 3
+
 # Per-layer CPU profile (FEX's JIT labels are switched on for the run through tools/launch.sh):
 profile/profile.sh cyberpunk2077 my-label
 
@@ -92,6 +103,7 @@ in `profiles/launch/`.
 | `tools/launch.sh`, `profiles/launch/` | Steam launch wrapper and per-game launch settings (env, executable swap, args) |
 | `lib/menu.sh`, `tests/menu-replay.sh` | OCR-gated menu steps for adapters, and their replay test on saved screenshots |
 | `system/frametimes.sh` | Builds the arm64 MangoHud layer used by `bench/run.sh FRAMES=SECS` |
+| `shim/`, `system/shim.sh` | Proxy DLL that caches Win32 calls Wine makes slow, its per-game installer, its check (`shim_check.c`), and a reproducer for the Wine cost (`igcs_cost.c`) |
 | `profile/` | perf + FEX perf-map profiler and the layer classifier |
 | `system/` | Per-game scheduler governor, system FEX setup, console mode, global scheduler installer |
 | `tools/` | Steam pipe helpers, launch-option editor, keyboard/mouse and virtual gamepad input, screenshots, GPU probe |
@@ -107,6 +119,8 @@ in `profiles/launch/`.
 - `scx_lavd` crashes on GB10; `system/scheduler.sh` uses `scx_bpfland`.
 - Console mode turns on automatic login: anyone at the TV gets the desktop session.
 - Screenshots can include Steam friend notifications; check before sharing.
+- Steam's cloud sync for controller layouts (app 241100) can get stuck failing; every launch then shows "Unable to
+  Sync". The runner cancels it (saves untouched); restarting Steam clears it.
 - Steam's udev rules have no entry for Xbox controllers over Bluetooth, so Steam cannot open them through hidraw and
   falls back to a generic mapping (D-pad problems in Big Picture). Not fixed yet.
 

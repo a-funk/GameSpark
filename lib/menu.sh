@@ -23,6 +23,10 @@ menu_send() {
 
 menu_pause() { [ -n "${MENU_REPLAY:-}" ] || sleep "$1"; }
 
+# Start MangoHud's frame log now, for adapters that set FRAMES_DELAY=key (bench/run.sh binds this hotkey).
+FRAMES_KEY=Shift_R+F11
+frames_start() { menu_send key "$FRAMES_KEY~0.3"; date +%s > "$MENU_DIR/bench_start"; }
+
 menu_wait() {  # NAME REGEX TRIES SECS
   for _ in $(seq "$3"); do
     screen_has "$1" "$2" && return 0

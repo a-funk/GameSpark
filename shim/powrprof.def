@@ -1,0 +1,5 @@
+; Proxy for powrprof.dll (The Witcher 3 imports only CallNtPowerInformation, which Wine's powrprof passes straight
+; to ntdll). Add a forwarder here for any other export a shimmed game imports from powrprof.
+LIBRARY powrprof.dll
+EXPORTS
+    CallNtPowerInformation=ntdll.NtPowerInformation
