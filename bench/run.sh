@@ -43,11 +43,38 @@ python3 -I "$ROOT/bench/telemetry.py" "$OUT/telemetry.jsonl" 8>&- & TEL=$!
 date +%s > "$OUT/start"
 [ -n "${SHOT_AT:-}" ] && (sleep "$SHOT_AT"; "$ROOT/tools/shot.sh" "$OUT/mid.png" >/dev/null) 8>&- &
 
+# Steam can hold a launch for a dialog only someone at the TV sees ("LaunchApp waiting for user response to X").
+# Informational notices (ShowInterstitials, e.g. "Controller using Steam Input") get OK; agreements never do.
+steam_notice_ok() {
+  local png=$OUT/steam-notice.png text xy
+  "$ROOT/tools/shot.sh" "$png" >/dev/null || return 1
+  text=$("$ROOT/tools/ocr.sh" "$png")
+  echo "$text" | grep -qiE "agree|EULA|terms|licen[cs]e" && die "Steam shows an agreement before launching $GAME; accept it once at the TV"
+  xy=$("$ROOT/tools/ocr.sh" "$png" --find '^OK$') || return 1
+  echo "Steam notice before launch: $(echo "$text" | grep -m1 -iE '[a-z]{4}' | cut -c1-80) -> OK"
+  # shellcheck disable=SC2086  # "x y"
+  python3 -I "$ROOT/tools/xinput.py" click $xy >/dev/null
+}
+steam_prompt() {  # the step Steam is waiting on for this app, if its latest launch line (after line $1) is a wait
+  tail -n +"$(( $1 + 1 ))" "$STEAM_LOG" | grep -E "AppID $APPID, " | tail -1 \
+    | grep -oE "waiting for user response to [A-Za-z]+" | awk '{print $NF}'
+}
+
 # Launchers can stall before starting the game (RDR2's Rockstar launcher at sign-in): adapters set LAUNCH_RETRIES,
 # LAUNCH_WAIT and a game_abort that clears the stuck launch.
 for attempt in $(seq "${LAUNCH_RETRIES:-1}"); do
+  seen=$(wc -l < "$STEAM_LOG")
   steam_launch "$APPID" "$LAUNCH_ARGS" || die "Steam did not accept the launch"
-  for i in $(seq "${LAUNCH_WAIT:-300}"); do G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break; sleep 1; done
+  for i in $(seq "${LAUNCH_WAIT:-300}"); do
+    G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break
+    # Steam also logs brief waits for its own steps (CreatingProcess, ProcessingShaderCache), which continue by
+    # themselves; only these two are dialogs.
+    case $(steam_prompt "$seen") in
+      ShowInterstitials) steam_notice_ok && seen=$(wc -l < "$STEAM_LOG") ;;
+      ShowEula) die "Steam wants $GAME's EULA accepted before it launches; accept it once at the TV" ;;
+    esac
+    sleep 1
+  done
   [ -n "${G:-}" ] && break
   declare -F game_abort >/dev/null && { echo "game did not start (attempt $attempt)"; game_abort; }
 done
