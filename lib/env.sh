@@ -10,6 +10,7 @@ steam_setup() {   # the running Steam's setup: Valve's launcher runs as the syst
   if [ -n "$p" ] && [ "$(readlink "/proc/$p/exe")" = /usr/bin/FEX ]; then echo fex; else echo snap; fi
 }
 : "${GAMESPARK_STEAM:=$(steam_setup)}"
+export GAMESPARK_STEAM   # child scripts that restart Steam must keep the setup detected while it ran
 if [ "$GAMESPARK_STEAM" = fex ]; then
   : "${STEAM_HOME:=$HOME}"
   : "${FEX_CONFIG_DIR:=${XDG_CONFIG_HOME:-$HOME/.config}/fex-emu}"

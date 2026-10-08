@@ -89,7 +89,29 @@ def parse_rottr(run):
             "seconds": end - start, "end_ts": end, "scenes": scenes}
 
 
-PARSERS = {"cyberpunk2077": parse_cyberpunk2077, "rottr": parse_rottr}
+def parse_rdr2(run):
+    """Benchmarks/Benchmark-*.txt: five passes ('Pass N, min, max, avg' fps), per-pass frame counts and frame-time
+    percentiles in whole milliseconds. The headline is pass 4, the long final scene the game reports on screen; its
+    1% low comes from the 99th-percentile frame time, so it is approximate (1 ms steps)."""
+    import glob
+    import re
+    res = os.path.join(run, "result")
+    text = open(sorted(glob.glob(os.path.join(res, "Benchmark-*.txt")))[-1]).read()
+    passes = [{"scene": f"Pass {m[0]}", "min_fps": float(m[1]), "max_fps": float(m[2]), "avg_fps": round(float(m[3]), 2)}
+              for m in re.findall(r"^Pass (\d+), ([\d.]+), ([\d.]+), ([\d.]+)", text, re.M)]
+    frames = {int(m[0]): int(m[2]) for m in re.findall(r"^Test (\d+): (\d+)/(\d+) frames", text, re.M)}
+    last = passes[-1]
+    p99 = re.search(r"Percentiles in ms for pass %d\n(?:.*\n)*?99%%,\s*([\d.]+)" % (len(passes) - 1), text)
+    api = re.search(r"API: (\w+)", text).group(1)
+    end = int(open(os.path.join(res, "bench_end")).read())
+    return {"game": "Red Dead Redemption 2", "api": "Vulkan" if api.lower() == "vulkan" else "DirectX 12 (VKD3D-Proton)",
+            "resolution": "1080p", "preset": f"{'Vulkan' if api.lower() == 'vulkan' else 'DX12'} · game's Safe defaults, VSync off",
+            "reported_avg_fps": last["avg_fps"], "min_fps": last["min_fps"], "max_fps": last["max_fps"],
+            "low1_fps": round(1000 / float(p99.group(1)), 1) if p99 else None,
+            "seconds": round(frames.get(len(passes) - 1, 0) / last["avg_fps"], 1), "end_ts": end, "scenes": passes}
+
+
+PARSERS = {"cyberpunk2077": parse_cyberpunk2077, "rottr": parse_rottr, "rdr2": parse_rdr2}
 
 
 def build(run, game, label):
@@ -105,7 +127,7 @@ def build(run, game, label):
     doc = {
         "ts": f"{base[0:4]}-{base[4:6]}-{base[6:8]}T{base[9:11]}:{base[11:13]}", "run_dir": base, "variant": label,
         "game": p["game"], "game_version": p.get("game_version"), "api": p.get("api"), "resolution": p["resolution"], "preset": p["preset"],
-        "avg_fps": rate(shown) or round(p["reported_avg_fps"], 1), "low1_fps": round(low1(shown), 1) if shown else None,
+        "avg_fps": rate(shown) or round(p["reported_avg_fps"], 1), "low1_fps": round(low1(shown), 1) if shown else p.get("low1_fps"),
         "rendered_fps": rate(rendered) or round(p["reported_avg_fps"], 1), "rendered_low1_fps": round(low1(rendered), 1) if rendered else None,
         "frame_gen": bool(p.get("frame_gen")), "reported_avg_fps": round(p["reported_avg_fps"], 1),
         "min_fps": round(p["min_fps"], 1), "max_fps": round(p["max_fps"], 1), "frames": len(shown) or None, "seconds": round(p["seconds"], 1),
@@ -162,6 +184,19 @@ def selftest():
     r = build(run2, "rottr", "t")
     assert r["avg_fps"] == 83.1 and r["low1_fps"] is None and len(r["scenes"]) == 3 and r["min_fps"] == 2.4, r
     assert r["api"].startswith("DirectX 12") and r["scenes"][2]["scene"] == "Geothermal Valley", r
+    run3 = os.path.join(os.path.dirname(run), "20261007-193902-rdr2-t")
+    res3 = os.path.join(run3, "result")
+    os.makedirs(res3)
+    open(os.path.join(res3, "Benchmark-26-10-07-20-09-36.txt"), "w").write(
+        "Frames Per Second (Higher is better) Min, Max, Avg\nPass 0, 26.1, 150.2, 125.834122\nPass 1, 8.924221, 122.337631, 76.016487\n\n"
+        "Frames under 16ms (for 60fps): \nTest 0: 2884/2889 frames (99.83%)\nTest 1: 9433/10207 frames (92.42%)\n\n"
+        "Percentiles in ms for pass 0\n99%,\t10.00\n\nPercentiles in ms for pass 1\n50%,\t12.00\n99%,\t20.00\n\n"
+        "GPU: NVIDIA GB10\tAPI: DX12\tVRAM: 93457 MB\n")
+    open(os.path.join(res3, "bench_end"), "w").write(str(int(end)))
+    os.link(os.path.join(run, "telemetry.jsonl"), os.path.join(run3, "telemetry.jsonl"))
+    g = build(run3, "rdr2", "t")
+    assert g["avg_fps"] == 76.0 and g["low1_fps"] == 50.0 and g["min_fps"] == 8.9 and len(g["scenes"]) == 2, g
+    assert g["api"].startswith("DirectX 12") and g["seconds"] == 134.3, g
     print("ok")
 
 
