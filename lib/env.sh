@@ -56,14 +56,16 @@ steam_running() { pgrep -f "[u]buntu12_32/steam " >/dev/null; }
 # Send a command to the running Steam client.
 steam_cmd() { timeout 10 sh -c 'printf "%s\n" "$1" > "$2"' _ "$1" "$STEAM_PIPE"; }
 
-# Launch an app and confirm Steam accepted it (it silently drops pipe commands while loading). Retries 4x.
+# Launch an app and confirm Steam received the command (it silently drops pipe commands while loading). Retries 4x.
+# Confirms on Steam's ExecCommandLine log line, not on the game process: that can take over 20 s to appear (first-run
+# install scripts take minutes), and a retry while the game starts would send a second launch.
 steam_launch() {
-  local appid=$1 args=$2 before attempt
+  local appid=$1 args=$2 before attempt seen="ExecCommandLine: \"-applaunch $1 "
   for attempt in 1 2 3 4; do
-    before=$(grep -c "Game process added : AppID $appid" "$STEAM_LOG" 2>/dev/null)
+    before=$(grep -cF "$seen" "$STEAM_LOG" 2>/dev/null)
     steam_cmd "-applaunch $appid $args"
     for _ in $(seq 20); do
-      [ "$(grep -c "Game process added : AppID $appid" "$STEAM_LOG" 2>/dev/null)" -gt "${before:-0}" ] && return 0
+      [ "$(grep -cF "$seen" "$STEAM_LOG" 2>/dev/null)" -gt "${before:-0}" ] && return 0
       sleep 1
     done
     echo "launch not accepted (attempt $attempt), retrying" >&2
