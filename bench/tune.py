@@ -98,6 +98,9 @@ def bench(game, cfg, warmup, prefix="tune"):
     if rec.get("scheduler") != cfg["SCHED"]:
         print(f"    discarded: ran under {rec.get('scheduler')}, wanted {cfg['SCHED']}", flush=True)
         return None
+    if rec.get("other_gpu_apps"):
+        print(f"    discarded: shared the GPU with {', '.join(rec['other_gpu_apps'])}", flush=True)
+        return None
     return rec
 
 
