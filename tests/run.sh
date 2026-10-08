@@ -14,5 +14,9 @@ done
 for f in bench/telemetry.py bench/cyberpunk2077_settings.py controller/xbox-watch.py tools/xinput.py; do
   python3 -I -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$f" || { echo "parse: $f"; fail=1; }
 done
+if command -v x86_64-w64-mingw32-gcc >/dev/null; then
+  x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -shared -o "${TMPDIR:-/tmp}/gamespark-shim-test.dll" shim/shim.c shim/powrprof.def -lpsapi && echo "ok   shim" || fail=1
+  rm -f "${TMPDIR:-/tmp}/gamespark-shim-test.dll"
+fi
 if command -v shellcheck >/dev/null; then shellcheck -x -S warning "${SH[@]}" && echo "ok   shellcheck" || fail=1; fi
 [ $fail = 0 ] && echo "all checks passed"; exit $fail
