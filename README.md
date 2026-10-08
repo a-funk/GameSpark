@@ -23,6 +23,8 @@ Cyberpunk 2077 built-in benchmark, 1080p, High, ray tracing off ([details](docs/
 | + DLSS frame generation 2x | **100.4 shown** (50.2 rendered) | 58.0 shown |
 | System FEX 2610 + native Vulkan driver (`system/fex-system.sh`), no frame gen | **69.2** | 44.6 |
 
+Red Dead Redemption 2 (FEX 2610 setup, DX12, 1080p, the game's Safe defaults, VSync off): **74.7-76.0 fps**.
+
 What we learned:
 
 - Games are **CPU-bound by translation**, not GPU-bound: the GPU sits ~60% busy and DLSS upscaling adds 3%.
