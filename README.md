@@ -61,7 +61,7 @@ system/console-mode.sh enable               # optional: log in and open Steam Bi
 # (Cyberpunk +17%, Tomb Raider -7%; see docs/FINDINGS.md). Close Steam first.
 system/fex-system.sh install && system/fex-system.sh share-snap
 GAMESPARK_STEAM=fex tools/steam-console.sh  # other commands detect which Steam is running
-system/console-mode.sh enable fex           # optional: boot into this Steam instead of the snap
+system/console-mode.sh enable fex           # optional: boot into this Steam (needed for Xbox pads in Big Picture)
 controller/pair.sh                          # optional: pair an Xbox or PS5 controller (see controller/README.md)
 
 # Once per game: launch through GameSpark's wrapper, which applies profiles/launch/<appid>.env (launcher skips,
@@ -107,7 +107,7 @@ in `profiles/launch/`.
 | `profile/` | perf + FEX perf-map profiler and the layer classifier |
 | `system/` | Per-game scheduler governor, system FEX setup, console mode, global scheduler installer |
 | `tools/` | Steam pipe helpers, launch-option editor, keyboard/mouse and virtual gamepad input, screenshots, GPU probe |
-| `controller/` | Bluetooth pairing for Xbox and PlayStation controllers, and the BlueZ settings they need |
+| `controller/` | Bluetooth pairing for Xbox and PlayStation controllers, the BlueZ settings and Steam udev rule they need, and a check for FEX's 32-bit evdev bug |
 | `results/` | Run and profile records behind the numbers in this README |
 | `docs/` | Findings and methodology |
 
@@ -121,8 +121,10 @@ in `profiles/launch/`.
 - Screenshots can include Steam friend notifications; check before sharing.
 - Steam's cloud sync for controller layouts (app 241100) can get stuck failing; every launch then shows "Unable to
   Sync". The runner cancels it (saves untouched); restarting Steam clears it.
-- Steam's udev rules have no entry for Xbox controllers over Bluetooth, so Steam cannot open them through hidraw and
-  falls back to a generic mapping (D-pad problems in Big Picture). Not fixed yet.
+- The 32-bit Steam client under FEX misreads controllers it reads through evdev: FEX hands it the 64-bit
+  `input_event` layout. Steam reads Bluetooth Xbox pads through hidraw instead once `system/fex-system.sh controllers`
+  installs `controller/60-gamespark-xbox-hidraw.rules`. The snap Steam cannot use hidraw, so use the FEX Steam for
+  Big Picture. Wired Xbox pads have no hidraw node and stay affected. See docs/FINDINGS.md.
 
 ## License
 

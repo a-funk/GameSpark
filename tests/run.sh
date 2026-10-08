@@ -11,7 +11,7 @@ done
 for t in bench/ingest.py bench/tune.py profile/analyze.py tools/steamcfg.py tools/winereg.py tools/gamepad.py; do
   out=$(python3 -I "$t" --selftest 2>&1) && echo "ok   $t" || { echo "FAIL $t"; echo "$out"; fail=1; }
 done
-for f in bench/telemetry.py bench/cyberpunk2077_settings.py controller/xbox-watch.py tools/xinput.py; do
+for f in bench/telemetry.py bench/cyberpunk2077_settings.py controller/xbox-watch.py controller/evdev32_check.py tools/xinput.py; do
   python3 -I -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$f" || { echo "parse: $f"; fail=1; }
 done
 if command -v x86_64-w64-mingw32-gcc >/dev/null; then
