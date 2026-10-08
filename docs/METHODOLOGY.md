@@ -5,10 +5,14 @@
 1. Refuses to start if another run or the game is active (`flock` on `/tmp/gamespark-bench.lock`).
 2. Optionally holds the lock files in `QUIET_LOCKS` so cron jobs skip their cycle during the run.
 3. Starts `bench/telemetry.py` (1 Hz: GPU utilization, power, graphics clock, temperature from `nvidia-smi`;
-   CPU utilization overall, on the fast cores and on the rest, from `/proc/stat`).
+   CPU utilization overall, on the fast cores and on the rest, from `/proc/stat`), and records other GPU compute
+   processes at the start and end (`other_gpu_apps`; the autotuner discards such runs).
 4. Sends `-applaunch <appid> <args>` through Steam's command pipe. The snap launcher drops command-line
    arguments, and Steam silently ignores pipe commands while it is loading, so the runner waits for
-   `Game process added : AppID <appid>` in Steam's console log and resends up to four times.
+   `ExecCommandLine: "-applaunch <appid> ` in Steam's console log and resends up to four times. While the game
+   starts, Steam may wait on a dialog ("LaunchApp waiting for user response to ..."): informational notices get
+   OK, an EULA stops the run, and "Unable to Sync" (Steam Cloud) gets Cancel, never "Play anyway", which could
+   cost the player's saved progress.
 5. Waits for the game process to exit and copies the game's own benchmark output (adapter `game_collect`).
 6. `bench/ingest.py` builds the run record.
 
@@ -23,8 +27,11 @@
   length, to the write time.
 
 - **Frame captures** (`FRAMES=SECS`): MangoHud logs every frame's time for SECS seconds, starting `FRAMES_DELAY`
-  seconds after the game's first frame; averages and 1% lows come from those frame times. What the window shows
-  is up to the adapter (a menu scene, a cutscene, a saved position); without menu driving it is the main menu.
+  seconds after the game's first frame, or when the adapter presses MangoHud's logging hotkey once its scene shows
+  (`FRAMES_DELAY=key`); averages and 1% lows come from those frame times. MangoHud's own CPU/GPU polling is off
+  (telemetry comes from `bench/telemetry.py`). What the window shows is up to the adapter (a menu scene, a
+  cutscene, a saved position); without menu driving it is the main menu. A saved position in a live quest (The
+  Witcher 3) still varies between runs as NPCs move, so compare means of several runs.
 
 ## Repeatability
 

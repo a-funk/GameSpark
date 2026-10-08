@@ -147,6 +147,64 @@ Getting there took five fixes, each now built into the adapter or documented in 
   (access violation in `RDR2.exe`); with NVAPI hidden it hangs instead. It ran only on llvmpipe. DX12 works, so the
   Vulkan vs DX12 comparison is blocked on this, not yet measured.
 
+## The Witcher 3: a 10 Hz "am I online?" check
+
+The Witcher 3 (4.x next-gen build, DirectX 12 only, VKD3D-Proton) on the FEX 2610 setup, measured at the player's
+own save (Novigrad, Steam Cloud) with Geralt standing still for 60 s, 1080p, the game's auto-detected settings
+(XeSS Auto, ray tracing unavailable), VSync off:
+
+| Configuration | Avg fps | 1% low | Frames over 30 ms |
+|---|---:|---:|---:|
+| As shipped (two clean runs) | 55.2-63.0 | 17.4-19.6 | 567-571 |
+| With `system/shim.sh` (one run on an otherwise idle GPU) | **88.1** | **63.2** | 0 |
+
+Without the shim, most frames took about 11 ms (90 fps) but a 35 ms stall landed every ~105 ms, steady in time
+rather than in frames: about 10 times a second. Over every run of the day (60 s each), including runs whose
+averages are not comparable because another workload shared the GPU:
+
+| Runs | Frames over 30 ms | ...of them 90-120 ms apart (the stall's cadence) |
+|---|---:|---:|
+| 8 without the shim | 565-601 | 430-557 |
+| 8 with the shim (7 of them sharing the GPU) | 0-114 | 0-8 |
+
+How it was traced:
+
+1. **Not the measurement, the controller or Xalia.** The stalls stayed with MangoHud's CPU/GPU polling off
+   (`cpu_stats=0,gpu_stats=0`, now the default for captures), with the DualSense's raw HID hidden
+   (`PROTON_DISABLE_HIDRAW`), and with Proton's Xalia helper off (`PROTON_USE_XALIA=0`). (Those three runs
+   overlapped another workload's LLM inference on the GPU, so their averages are not comparable; the stall cadence,
+   which is what they tested, was the same.)
+2. **perf** (`profile/profile.sh`): 17% of the game's CPU was a Wine service thread (`wine_sechost_service` in
+   `winedevice.exe`, Wine's driver host), and 2,020 of its samples were in the kernel's `rtl8127_dump_tally_counter`
+   (the Realtek NIC's hardware counters, on a port that is down), plus `dev_fetch_sw_netstats` and
+   `__snmp6_fill_stats64`: netlink link dumps. That thread used about 12 s of CPU in the 30 s window, close to the
+   10.5 s that 10 stalls/s x 35 ms add up to.
+3. **Wine trace** (`WINEDEBUG=+iphlpapi,+nsi`): the game's `MainThread` called `GetAdaptersAddresses` about 10
+   times a second, and each call made ~81 `ConvertInterfaceLuidToGuid` lookups, each an ioctl to `nsiproxy.sys`
+   in `winedevice.exe`. Wine's nsiproxy refreshes its interface list (`if_nameindex()`, a full netlink dump with
+   every interface's counters) on each lookup, so the work grows with the square of the host's interfaces (11 here:
+   Wi-Fi, the Realtek port, Tailscale, Docker bridges and veths).
+4. **Relay trace** (`WINEDEBUG=+relay`, `RelayInclude` set to one function at a time): the caller of
+   `GetAdaptersAddresses` is Wine's own `wininet.dll`, and the caller of `wininet!InternetGetConnectedState` is
+   `witcher3.exe` (offset 0x2546476) on its main thread. Windows answers that call from a cached network state;
+   Wine's `InternetGetConnectedStateExW` rebuilds the full adapter list every time.
+
+The fix caches the answer for 2 s at the game's import of `InternetGetConnectedState`. `shim/shim.c` is a small x86
+Windows DLL built with mingw-w64 on the Spark, loaded as a proxy for `powrprof.dll` (the game imports one function
+from it, which Wine passes straight to `ntdll`, so the proxy forwards it there and never loads the real DLL). On
+load it patches the import tables of the modules already loaded. No game or Proton file is modified; the shim is
+one added file next to the executable, switched on by `WINEDLLOVERRIDES` in `profiles/launch/292030.env`, and Wine
+falls back to its own `powrprof` if the file is missing.
+
+The underlying cost is in Wine (an uncached `InternetGetConnectedState` and an nsiproxy lookup that re-enumerates
+all interfaces). x86 Linux hosts should pay it too at native speed (not measured). Reporting it upstream would fix
+every game that polls it.
+
+Not measured yet: XeSS vs DLSS and the scheduler for this game (`TUNE_KNOBS` in the adapter). Today's autotuner
+sessions overlapped another workload's GPU use (now detected; such runs are discarded) and a Steam Cloud sync
+failure (now cancelled without touching saves), so the tune needs a quiet window: `bench/tune.py witcher3`.
+For play on the 60 Hz TV the adapter leaves VSync on: with the shim the game holds 60 with headroom.
+
 ## Frame times through FEX (MangoHud)
 
 Games without a built-in benchmark (Divinity: Original Sin 2, The Witcher 3) need an external frame-time source.
@@ -160,6 +218,10 @@ MangoHud works, with two adjustments found with `VK_LOADER_DEBUG` in the Proton 
   the container works; `tools/launch.sh` does that for `CONTAINER_` settings, which `bench/run.sh FRAMES=SECS` uses.
 
 First capture: DOS2's main menu at 60.0 fps (1% low 58.3), the display-rate cap.
+
+MangoHud's logging hotkey works inside the container too (it reads the X keyboard state), so adapters that reach
+their scene by menu driving start the log themselves once the scene is on screen (`FRAMES_DELAY=key`,
+`frames_start` in `lib/menu.sh`) instead of guessing a delay that would include loading screens.
 
 ## Controllers under Proton
 
@@ -217,3 +279,10 @@ therefore kept per setup (`profiles/snap/`, `profiles/fex/`), and the governor r
 A cron job on the test machine re-verified 12,087 camera frames every 5 minutes, forking `bash`/`jq`/`sha256sum`
 per frame for about 90 s. During a burst it took ~10% of all CPU samples, enough to cause periodic stutter and
 to move benchmark averages by 3-4%. `bench/run.sh` can hold such jobs' lock files during a run (`QUIET_LOCKS`).
+
+The GPU is shared too. During one Witcher 3 tuning session another workload on the Spark sent a local LLM server
+(Ollama) a continuous stream of chat requests; a run in that window fell to 49 fps with the GPU 91% busy, where the
+same configuration had measured 88 fps shortly before. `bench/run.sh` now records other GPU compute processes at
+the start and end of each run (`other_gpu_apps` in the record, a warning on the console), and `bench/tune.py`
+discards such runs. An idle model that is still loaded counts too, which is conservative; Ollama unloads models
+after five idle minutes.
