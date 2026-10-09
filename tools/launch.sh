@@ -4,7 +4,9 @@
 # Every launch then applies, without touching Steam's config:
 #   profiles/launch/<appid>.env   the game's own settings (in this repo), e.g. PROTON_DISABLE_HIDRAW=...,
 #                                 SWAP_FROM / SWAP_TO to start a different executable (skip a launcher), or
-#                                 EXTRA_ARGS=... appended to the game's command line (split on spaces)
+#                                 EXTRA_ARGS=... appended to the game's command line (split on spaces), or
+#                                 FEX_BINARY=gamespark to run the game under GameSpark's patched FEX build
+#                                 (system/fex-patched.sh; FEX_BINARY=/path/to/FEX for any other build)
 #   $SG_DATA/launch/run.env       settings for every game while a benchmark run is active (bench/run.sh writes and
 #                                 removes it), e.g. MangoHud frame-time logging
 # Both are KEY=VALUE lines (no quotes needed; # comments allowed). A CONTAINER_ prefix sets the variable inside Steam's
@@ -35,5 +37,12 @@ if [ ${#inner[@]} -gt 0 ]; then   # before the Proton script, i.e. inside the co
     [[ ${args[$i]} == */proton ]] && { args=("${args[@]:0:i}" env "${inner[@]}" "${args[@]:i}"); break; }
   done
 fi
-mkdir -p "$D" && echo "$(date '+%F %T') app $app applied: ${applied[*]:-none}${SWAP_TO:+ (exe -> $SWAP_TO)}${inner[*]:+ (in container: ${inner[*]})}${EXTRA_ARGS:+ (args: $EXTRA_ARGS)}" >> "$D/launches.log"
+# Under the FEX Steam every x86 child re-executes the FEX binary it was started with, so starting the launch chain
+# with another FEX moves the whole game (Proton, wineserver, the game) onto it and leaves Steam alone.
+fexbin=${FEX_BINARY:-}
+[ "$fexbin" = gamespark ] && fexbin=$SG_DATA/fex/current/bin/FEX
+if [ -n "$fexbin" ]; then
+  if [ -x "$fexbin" ]; then args=("$fexbin" "${args[@]}"); else echo "launch.sh: $fexbin not found, using the default FEX" >&2; fexbin="$fexbin (missing)"; fi
+fi
+mkdir -p "$D" && echo "$(date '+%F %T') app $app applied: ${applied[*]:-none}${SWAP_TO:+ (exe -> $SWAP_TO)}${inner[*]:+ (in container: ${inner[*]})}${EXTRA_ARGS:+ (args: $EXTRA_ARGS)}${fexbin:+ (FEX: $fexbin)}" >> "$D/launches.log"
 exec "${args[@]}"

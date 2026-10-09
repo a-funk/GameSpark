@@ -20,8 +20,11 @@ if command -v x86_64-w64-mingw32-gcc >/dev/null; then
     && x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -mwindows -o "$t.exe" shim/igcs_cost.c -lwininet -liphlpapi \
     && x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -mwindows -o "$t-check.exe" shim/shim_check.c -lwininet -lpowrprof \
     && echo "ok   shim" || fail=1
-  x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -mwindows -o "$t-fault.exe" tools/faultprobe.c && echo "ok   faultprobe" || fail=1
-  rm -f "$t.dll" "$t.exe" "$t-check.exe" "$t-fault.exe"
+  for c in faultprobe hwbp_check syscall_check; do
+    x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -mwindows -o "$t-$c.exe" "tools/$c.c" && echo "ok   $c" || fail=1
+    rm -f "$t-$c.exe"
+  done
+  rm -f "$t.dll" "$t.exe" "$t-check.exe"
 fi
 if command -v shellcheck >/dev/null; then shellcheck -x -S warning "${SH[@]}" && echo "ok   shellcheck" || fail=1; fi
 [ $fail = 0 ] && echo "all checks passed"; exit $fail

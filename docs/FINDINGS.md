@@ -295,56 +295,73 @@ still go through evdev and would show the same problem in the FEX Steam (not tes
 converting `input_event` on reads (and on uinput writes) for 32-bit guests. When `controller/evdev32_check.py`
 starts exiting 0, the rule is no longer needed.
 
-## STAR WARS: Galactic Racer: Denuvo stops it under FEX
+## STAR WARS: Galactic Racer: what Denuvo needs from FEX
 
-The game (Unreal Engine 5, DirectX 12, released 2026-10-06) ships Denuvo Anti-Tamper with a 5-machine activation
-limit. It does not start on the Spark, under either FEX (system 2610 or the snap's 2603). Epic's bootstrapper
-(`Launcher.exe`) starts `SWGR.exe`, which starts the game. The game exits about 0.6 s later, before Unreal writes a
-log, and `SWGR.exe` exits with code 1. Whether these attempts count against the activation limit is unknown.
+The game (Unreal Engine 5, DirectX 12, released 2026-10-06, Denuvo Anti-Tamper with a 5-machine activation limit) runs
+on the Spark with GameSpark's patched FEX. On its first launch through Steam it reached the title screen at a steady
+60 fps (vsync). With stock FEX (2610 or the snap's 2603) it exits about 0.6 s after the game process starts, inside
+Denuvo's startup checks, before Unreal writes a log.
 
-How it was traced:
+**How it was found.** A standalone repro runs the game exe under Wine and FEX without Steam (so Denuvo cannot
+activate) and logs exceptions. Under stock FEX, Denuvo's vectored handler sees about 2,800 deliberate faults and
+then a read through a pointer exactly 2^32 below a valid address (`0xFFFFFFFF2F12FD84` at `0x1535129EB`), and the
+process dies of a stack overflow. Box64, an independent x86 emulator, failed the same way, which ruled out a
+FEX-specific instruction bug. With two additions Box64 passed, and both additions are FEX features this game needs:
 
-1. **Wine's exception trace.** `WINEDEBUG=+timestamp,+pid,+tid,+process,+loaddll,trace+seh` with `PROTON_LOG=1`.
-   `PROTON_LOG=1` alone also dumps an unwind backtrace for every exception, 2.5 GB in a minute.
-   - Denuvo's startup checks show up as a vectored handler that deliberately triggers faults and continues after
-     each one: about 2,400 per launch.
-   - The faults are reads of non-canonical and kernel-half addresses, plus AVX-512 BF16 and SERIALIZE instructions
-     the emulated CPU does not have.
-2. **The failure.**
-   - One read at `0x1535129EB` (`or ecx, [rbp-0x2e51fe91]`) hits `0xFFFFFFFF2F12FD84`, with `rbp` =
-     `0xFFFFFFFF5D64FC15`.
-   - Denuvo's handler declines this fault. Wine's unwinder then walks Denuvo's frameless code into a nested-fault
-     loop until the stack overflows.
-   - The address and registers are the same in every run.
-3. **Where FEX differs from x86.** `tools/faultprobe.c` raises the same kinds of faults and compares what Windows
-   code sees with a real x86-64 CPU. FEX 2610 differs in two places:
-   - A read of a non-canonical address (bits 63:47 not all equal) is reported as a page fault at that address. x86
-     raises a general-protection fault, and Windows reports address -1.
-   - A non-canonical address whose low 56 bits point at mapped memory is read with no fault at all, because ARM64
-     Linux ignores the top address byte.
+1. **Direct Windows syscalls.** The x86 reference log (Proton issue #10228) shows about 910 raw `syscall`
+   instructions from the game's own code in its first 0.6 s. Proton's Wine traps them with a seccomp filter.
+   - FEX 2610 emulates seccomp only with `NeedsSeccomp=1`, which is off by default, so Wine's filter install fails
+     with `EINVAL`. The syscalls then run as Linux syscalls: in `tools/syscall_check.c` a copied `NtClose` stub
+     (number `0xf`) runs Linux `rt_sigreturn` and crashes.
+   - The Linux return values are 64-bit `-errno`, where Windows returns 32-bit NTSTATUS. That is the likely source
+     of the upper half full of ones.
+   - With `NeedsSeccomp=1` the call is trapped, but FEX also executed it, and its SIGSYS reported RIP at the
+     `syscall` instruction instead of after it. Wine returns to `RIP + 0xb`, so it landed 2 bytes early and looped.
+   - Fix: `fex/patches/0001` (skip the syscall, keep RAX = syscall number, report the RIP after it).
+2. **Hardware execute breakpoints.**
+   - What Denuvo does: on every thread it arms DR3 with `NtSetContextThread` (`dr3=0x14d2b84d0, dr7=0x40`) and
+     expects `EXCEPTION_SINGLE_STEP` when that address runs.
+   - What FEX did: wineserver sets debug registers with `ptrace(PTRACE_POKEUSER)`, FEX answered `EPERM`
+     (`set_thread_context() = ACCESS_DENIED`), and nothing fired.
+   - The fix, `fex/patches/0002`, carries the debug registers from wineserver to the game thread through a small
+     per-thread shared-memory mailbox. It makes every armed address the start of its own compiled block, where the
+     JIT checks the current thread's DR0-3 and raises a guest `#DB` (trap 1, `TRAP_HWBKPT`, DR6 set).
+     `tools/hwbp_check.c` passes with it: SetThreadContext succeeds, exactly one single-step at the right address,
+     `Dr6=0xffff0ff1`.
 
-   SERIALIZE, AVX-512, `ud2`, `hlt` and `in` all match. FEX also hands Wine SIGILL with trap number 0 instead of 6,
-   which Wine logs as "Got unexpected trap 0". Wine maps both to the same exception, so programs cannot see it.
-4. **Ruled out.** Each of these still fails at the same instruction with the same registers:
-   - The first difference. A local FEX 2610 build that reports non-canonical faults as general-protection faults
-     makes the probe match there, and the game fails the same way.
-   - FEX's `SMCChecks=full` (Denuvo modifies its own code) and `HideHypervisorBit`, set through a per-executable FEX
-     AppConfig. A renamed test program confirmed that the AppConfig applies.
-   - The FEX version: the snap's FEX 2603 fails the same way.
+**Verification.**
+- **Standalone:** 2,846 exceptions and the stack overflow became 49 exceptions (2 of them the expected
+  single-steps), and the game loaded `steam_api64.dll` and asked Steam to relaunch it.
+- **Through Steam:** 165 single-steps (one per thread), about 117,000 direct syscalls handled by Wine, then
+  VKD3D-Proton, DXVK, NVAPI, DLSS and EOS loaded, and the title screen showed.
 
-   Valve's ARM64 Proton builds ("Proton Experimental (ARM64)", listed for the Steam Frame) are not offered by
-   either Steam here. With that tool mapped, Steam ran `Launcher.exe` with no Proton at all.
-5. **Open.** The bad pointer comes from Denuvo's virtual-machine state. `rbp` looks like a 32-bit value with the
-   upper half set. With the upper half clear, the address would be an ordinary `0x2F12FD84`. Two candidates remain:
-   - the second difference, where a read that faults on x86 silently succeeds on ARM;
-   - an instruction FEX emulates differently.
+**Ruled out along the way** (each still failed the same way): reporting non-canonical faults as #GP like x86 does;
+FEX's `SMCChecks=full`, `HideHypervisorBit` and other codegen options; FEX 2603 and FEX `main` (identical to 2610).
+ARM64 Top Byte Ignore (a tagged non-canonical pointer reads without faulting) and FEX's segment selectors (CS=0x30)
+also differ from x86, but Box64 passed despite them.
 
-   Telling them apart needs an instruction-level comparison against a real x86 CPU.
+**Other FEX bugs found while testing**, not needed for this game:
+- `cmpxchg r32, r32` with a register destination does not zero-extend it on the not-equal path;
+- 32-bit-address `loop` leaves the upper half of RCX (a 2610 regression);
+- 32-bit-address `movsb`/`stosb` crash;
+- a faulting split-lock atomic kills the FEX process with SIGBUS.
 
-FEX does not accept AI-written code (its `CONTRIBUTING.md`), so the local build was only an experiment. The way to
-pass this on is a report with the probe and the trace. Also note that Steam asks which launch option to use (Play,
-or Reinstall Epic Online Services) until "Don't ask again" is chosen. While that prompt is pending, launches sent
-through the Steam pipe go nowhere.
+**How it is set up.** `system/fex-patched.sh install` builds the system FEX's release with `fex/patches` and installs
+it for the user next to the packaged FEX (never over it). It also adds an AppArmor rule so Steam's container can use
+user namespaces under it. `profiles/launch/4078430.env` sets `FEX_BINARY=gamespark`, `FEX_NEEDSSECCOMP=1` and
+`FEX_GSHWBP=1`. `tools/launch.sh` then starts only this game's process tree under the patched FEX; Steam stays on the
+packaged one. FEX does not accept AI-written code (its `CONTRIBUTING.md`), so the patches stay local, and the findings
+go upstream as a written report.
+
+**Pitfalls met on the way.**
+- Steam's launch options are stored per account: after the TV's Steam was switched to another household account,
+  the game launched without GameSpark's wrapper.
+- Steam re-asked for the EULA after the 2026-10-08 hotfix.
+- Until "Don't ask again" is chosen, Steam's launch-option chooser (Play / Reinstall Epic Online Services) silently
+  swallows launches sent through the Steam pipe.
+- A standalone run that gets past Denuvo calls `steam.exe steam://run/4078430`; with a reachable Steam that would be
+  a real launch and a Denuvo activation.
+
 
 ## The scheduler is a per-game choice
 

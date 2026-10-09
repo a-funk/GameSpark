@@ -1,0 +1,509 @@
+From a755102f7b42e4937fbbe87050f0cf38914d10a4 Mon Sep 17 00:00:00 2001
+From: GameSpark <gamespark@localhost>
+Date: Fri, 9 Oct 2026 14:01:48 -0700
+Subject: [PATCH 2/2] x86 hardware execute breakpoints (DR0-DR3/DR7) for Wine guests
+
+Local GameSpark patch, not submitted upstream (FEX does not accept AI-generated code). Enabled with FEX_GSHWBP=1;
+needs FEX_NEEDSSECCOMP=1 too (it disables inline syscalls, so every syscall returns through the hook).
+
+Denuvo arms an execute breakpoint on its own thread with NtSetContextThread (DR3, DR7=0x40) and expects
+EXCEPTION_SINGLE_STEP when the address runs. wineserver sets debug registers with ptrace(PTRACE_POKEUSER) at
+offsetof(struct user, u_debugreg[i]); FEX answered EPERM. Now:
+- ptrace PEEKUSER/POKEUSER of the debug registers go through a per-thread shared-memory mailbox
+  (/dev/shm/fexhwbp-<tid>) that each guest thread creates and applies at its next syscall return;
+- armed addresses are reference counted process-wide; the frontend makes an armed address the entry of its own
+  compile unit, and the JIT emits a check there against the current thread's DR0-3/DR7 that raises a guest #DB
+  (SIGTRAP, trapno 1, TRAP_HWBKPT, DR6 bit set) with RIP at the breakpoint.
+Data breakpoints are not implemented (logged). Mailboxes of dead threads are removed at the next process start.
+---
+ FEXCore/Source/Interface/Context/Context.h    |  24 ++++
+ FEXCore/Source/Interface/Core/Frontend.cpp    |  14 ++-
+ FEXCore/Source/Interface/Core/JIT/JIT.cpp     |  41 ++++++-
+ FEXCore/Source/Interface/Core/JIT/JITClass.h  |   3 +-
+ FEXCore/include/FEXCore/Core/Context.h        |   2 +
+ FEXCore/include/FEXCore/Core/CoreState.h      |   5 +
+ .../Tools/LinuxEmulation/LinuxSyscalls/HWBP.h | 105 ++++++++++++++++++
+ .../LinuxEmulation/LinuxSyscalls/Syscalls.cpp |  67 +++++++++++
+ .../LinuxSyscalls/Syscalls/Info.cpp           |  23 ++++
+ .../LinuxSyscalls/ThreadManager.cpp           |   2 +
+ .../LinuxSyscalls/ThreadManager.h             |   6 +
+ 11 files changed, 287 insertions(+), 5 deletions(-)
+ create mode 100644 Source/Tools/LinuxEmulation/LinuxSyscalls/HWBP.h
+
+diff --git a/FEXCore/Source/Interface/Context/Context.h b/FEXCore/Source/Interface/Context/Context.h
+index 9f427da..3923829 100644
+--- a/FEXCore/Source/Interface/Context/Context.h
++++ b/FEXCore/Source/Interface/Context/Context.h
+@@ -21,6 +21,7 @@
+ #include <FEXCore/fextl/vector.h>
+ 
+ #include <atomic>
++#include <shared_mutex>
+ #include <cstddef>
+ #include <cstdint>
+ #include <mutex>
+@@ -229,6 +230,29 @@ public:
+     return CodeInvalidationMutex;
+   }
+ 
++  // Local experiment (GameSpark): armed x86 execute breakpoint addresses, reference counted across threads.
++  void HWBPAddressRef(uint64_t Address, bool Add) override {
++    std::unique_lock lk(HWBPLock);
++    if (Add) {
++      if (HWBPRefs[Address]++ == 0) {
++        HWBPCount.fetch_add(1, std::memory_order_release);
++      }
++    } else if (auto it = HWBPRefs.find(Address); it != HWBPRefs.end() && --it->second == 0) {
++      HWBPRefs.erase(it);
++      HWBPCount.fetch_sub(1, std::memory_order_release);
++    }
++  }
++  bool IsHWBPAddress(uint64_t Address) {
++    if (HWBPCount.load(std::memory_order_acquire) == 0) {
++      return false;
++    }
++    std::shared_lock lk(HWBPLock);
++    return HWBPRefs.contains(Address);
++  }
++  std::shared_mutex HWBPLock;
++  fextl::unordered_map<uint64_t, uint32_t> HWBPRefs;
++  std::atomic<uint32_t> HWBPCount {};
++
+   void ConfigureAOTGen(FEXCore::Core::InternalThreadState* Thread, fextl::set<uint64_t>* ExternalBranches, uint64_t SectionMaxAddress) override;
+ 
+   bool IsAddressInCodeBuffer(FEXCore::Core::InternalThreadState* Thread, uintptr_t Address) const override;
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+index 78d5f1a..bffd784 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -1141,6 +1141,9 @@ void Decoder::BranchTargetInMultiblockRange() {
+       return;
+     }
+ 
++    if (CTX->IsHWBPAddress(InstEnd)) {
++      return;
++    }
+     AddBranchTarget(InstEnd);
+     BlockInfo.EntryPoints.emplace(InstEnd);
+     return;
+@@ -1172,7 +1175,7 @@ void Decoder::BranchTargetInMultiblockRange() {
+     TargetRIP &= 0xFFFFFFFFU;
+   }
+ 
+-  if (Conditional) {
++  if (Conditional && !CTX->IsHWBPAddress(InstEnd)) {
+     // If we are conditional then a target can be the instruction past the conditional instruction
+     AddBranchTarget(InstEnd);
+   }
+@@ -1181,7 +1184,8 @@ void Decoder::BranchTargetInMultiblockRange() {
+   // Forbid distant branches to have the cost code better match the guest code layout, avoiding massive (range-wise) code
+   // blocks in highly fragmented guest code. Such branches are often not-taken branches to garbage in obfuscated code.
+   constexpr uint64_t MAX_FORWARD_BRANCH_DIST = FEXCore::Utils::FEX_PAGE_SIZE * 4;
+-  bool ValidMultiblockMember = TargetRIP >= EntryPoint && TargetRIP < std::min(InstEnd + MAX_FORWARD_BRANCH_DIST, SectionMaxAddress);
++  bool ValidMultiblockMember = TargetRIP >= EntryPoint && TargetRIP < std::min(InstEnd + MAX_FORWARD_BRANCH_DIST, SectionMaxAddress) &&
++                               !CTX->IsHWBPAddress(TargetRIP);
+ 
+ #ifdef ARCHITECTURE_arm64ec
+   ValidMultiblockMember = ValidMultiblockMember && !RtlIsEcCode(TargetRIP);
+@@ -1584,6 +1588,12 @@ void Decoder::DecodeLoop(const uint8_t* _InstStream, uint64_t GuestSizePause) {
+ 
+       // MAX_INST_SIZE assumes worst case
+       auto OpAddress = BlockIt->Entry + PCOffset;
++
++      if (OpAddress != EntryPoint && CTX->IsHWBPAddress(OpAddress)) [[unlikely]] {
++        // Local experiment (GameSpark): end the unit before an armed execute breakpoint so it gets its own entry check.
++        FinalInstruction = true;
++        break;
++      }
+       auto OpMaxAddress = OpAddress + MAX_INST_SIZE;
+ 
+       auto OpMinPage = OpAddress & FEXCore::Utils::FEX_PAGE_MASK;
+diff --git a/FEXCore/Source/Interface/Core/JIT/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+index ef7e332..f4c8ee8 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/JIT.cpp
+@@ -825,7 +825,40 @@ void Arm64JITCore::EmitSuspendInterruptCheck() {
+ #endif
+ }
+ 
+-void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF) {
++void Arm64JITCore::EmitHWBPCheck(uint64_t RIP) {
++  // Local experiment (GameSpark): raise a guest #DB if this thread has an execute breakpoint armed at RIP.
++  ARMEmitter::ForwardLabel l_NoHit;
++  ldr(TMP1, STATE_PTR(CpuStateFrame, State.hwbp_mask));
++  (void)cbz(ARMEmitter::Size::i64Bit, TMP1, &l_NoHit);
++  LoadConstant(ARMEmitter::Size::i64Bit, TMP2, RIP);
++  for (uint32_t i = 0; i < 4; ++i) {
++    ARMEmitter::ForwardLabel l_Next;
++    (void)tbz(TMP1, i, &l_Next);
++    ldr(TMP3, STATE, offsetof(FEXCore::Core::CpuStateFrame, State) + offsetof(FEXCore::Core::CPUState, hwbp_addr) + i * 8);
++    cmp(ARMEmitter::Size::i64Bit, TMP3, TMP2);
++    (void)b(ARMEmitter::Condition::CC_NE, &l_Next);
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP3, 0xFFFF0FF0ULL | (1ULL << i));
++    str(TMP3, STATE_PTR(CpuStateFrame, State.hwbp_dr6));
++    str(TMP2, STATE_PTR(CpuStateFrame, State.rip));
++    Core::CpuStateFrame::SynchronousFaultDataStruct FaultState = {
++      .FaultToTopAndGeneratedException = 1,
++      .Signal = Core::FAULT_SIGTRAP,
++      .TrapNo = X86State::X86_TRAPNO_DB,
++      .si_code = 4, // TRAP_HWBKPT
++      .err_code = 0,
++    };
++    uint64_t Constant {};
++    memcpy(&Constant, &FaultState, sizeof(FaultState));
++    LoadConstant(ARMEmitter::Size::i64Bit, TMP3, Constant);
++    str(TMP3, STATE, offsetof(FEXCore::Core::CpuStateFrame, SynchronousFaultData));
++    ldr(TMP3, STATE, offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGTRAP));
++    br(TMP3);
++    (void)Bind(&l_Next);
++  }
++  (void)Bind(&l_NoHit);
++}
++
++void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, uint64_t BlockStartRIP) {
+   // Get the address of the JITCodeHeader and store in to the core state.
+   // Two instruction cost, each 1 cycle.
+   adr_OrRestart(TMP1, &HeaderLabel);
+@@ -835,6 +868,10 @@ void Arm64JITCore::EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool C
+     EmitTFCheck();
+   }
+ 
++  if (CTX->IsHWBPAddress(BlockStartRIP)) [[unlikely]] {
++    EmitHWBPCheck(BlockStartRIP);
++  }
++
+   if (SpillSlots) {
+     const auto TotalSpillSlotsSize = SpillSlots * MaxSpillSlotSize;
+ 
+@@ -1000,7 +1037,7 @@ CPUBackend::CompiledCode Arm64JITCore::CompileCode(uint64_t Entry, uint64_t Size
+         CodeData.EntryPoints.emplace(BlockStartRIP, GetCursorAddress<uint8_t*>());
+         DebugData->GuestOpcodes.push_back({BlockIROp->GuestEntryOffset, GetCursorAddress<uint8_t*>() - CodeData.BlockBegin});
+ 
+-        EmitEntryPoint(JITCodeHeaderLabel, CheckTF);
++        EmitEntryPoint(JITCodeHeaderLabel, CheckTF, BlockStartRIP);
+       }
+ 
+       if (PendingCallReturnTargetLabel) {
+diff --git a/FEXCore/Source/Interface/Core/JIT/JITClass.h b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+index 17e7691..828e46e 100644
+--- a/FEXCore/Source/Interface/Core/JIT/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/JITClass.h
+@@ -633,10 +633,11 @@ private:
+                            bool MaskAllOnes);
+ 
+   void EmitTFCheck();
++  void EmitHWBPCheck(uint64_t RIP);
+ 
+   void EmitSuspendInterruptCheck();
+ 
+-  void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF);
++  void EmitEntryPoint(ARMEmitter::BackwardLabel& HeaderLabel, bool CheckTF, uint64_t BlockStartRIP);
+ 
+   [[nodiscard]] CodeBuffer::CodeBufferAllocation AllocateCodeBufferInSharedCache(size_t Size);
+ 
+diff --git a/FEXCore/include/FEXCore/Core/Context.h b/FEXCore/include/FEXCore/Core/Context.h
+index 8aa448e..0e6e0f5 100644
+--- a/FEXCore/include/FEXCore/Core/Context.h
++++ b/FEXCore/include/FEXCore/Core/Context.h
+@@ -144,6 +144,8 @@ public:
+   FEX_DEFAULT_VISIBILITY virtual void
+   InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) = 0;
+   FEX_DEFAULT_VISIBILITY virtual FEXCore::Utils::WritePriorityMutex::Mutex& GetCodeInvalidationMutex() = 0;
++  // Local experiment (GameSpark): guest addresses with an x86 execute breakpoint armed in some thread.
++  FEX_DEFAULT_VISIBILITY virtual void HWBPAddressRef(uint64_t Address, bool Add) = 0;
+ 
+   FEX_DEFAULT_VISIBILITY virtual void
+   ConfigureAOTGen(FEXCore::Core::InternalThreadState* Thread, fextl::set<uint64_t>* ExternalBranches, uint64_t SectionMaxAddress) = 0;
+diff --git a/FEXCore/include/FEXCore/Core/CoreState.h b/FEXCore/include/FEXCore/Core/CoreState.h
+index 80514bf..2b791b3 100644
+--- a/FEXCore/include/FEXCore/Core/CoreState.h
++++ b/FEXCore/include/FEXCore/Core/CoreState.h
+@@ -248,6 +248,11 @@ struct alignas(64) CPUState {
+   constexpr static uint32_t SEGMENT_ARRAY_INDEX_GDT = 0;
+   constexpr static uint32_t SEGMENT_ARRAY_INDEX_LDT = 1;
+   Core::CPUState::gdt_segment private_gdt[32] {};
++
++  // Local experiment (GameSpark): x86 execute breakpoints (DR0-3 addresses, enabled-execute mask, DR6).
++  uint64_t hwbp_addr[4] {};
++  uint64_t hwbp_mask {};
++  uint64_t hwbp_dr6 {};
+ };
+ static_assert(std::is_trivially_copyable_v<CPUState>, "Needs to be trivial");
+ static_assert(std::is_standard_layout_v<CPUState>, "This needs to be standard layout");
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/HWBP.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/HWBP.h
+new file mode 100644
+index 0000000..aef0dbe
+--- /dev/null
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/HWBP.h
+@@ -0,0 +1,105 @@
++// SPDX-License-Identifier: MIT
++// Local experiment (GameSpark; not for upstream): x86 hardware execute breakpoints for Wine guests.
++// wineserver sets debug registers with ptrace(PTRACE_POKEUSER, tid, offsetof(struct user, u_debugreg[i]), value).
++// Tracer and tracee are separate FEX processes, so the values travel through a per-thread shared-memory mailbox,
++// /dev/shm/fexhwbp-<tid>, which each tracee thread creates and applies at its next syscall return.
++#pragma once
++#include <atomic>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <dirent.h>
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++namespace FEX::HLE::HWBP {
++struct Mailbox {
++  std::atomic<uint64_t> Version; // bumped by the tracer after each write
++  uint64_t DR[8];
++};
++static_assert(sizeof(Mailbox) <= 4096);
++
++constexpr uint64_t DEBUGREG_OFFSET = 848; // offsetof(struct user, u_debugreg) on x86-64
++constexpr size_t MAILBOX_SIZE = 4096;
++
++inline bool Enabled() {
++  static const bool Value = [] {
++    const char* Env = getenv("FEX_GSHWBP");
++    return Env && Env[0] == '1';
++  }();
++  return Value;
++}
++
++inline void MailboxPath(char* Buf, size_t Size, uint32_t TID) {
++  snprintf(Buf, Size, "/dev/shm/fexhwbp-%u", TID);
++}
++
++// Tracer side: map another thread's mailbox; nullptr if that thread has none (not a FEX guest with this enabled).
++inline Mailbox* OpenRemote(uint32_t TID) {
++  char Path[64];
++  MailboxPath(Path, sizeof(Path), TID);
++  const int FD = open(Path, O_RDWR | O_CLOEXEC);
++  if (FD < 0) {
++    return nullptr;
++  }
++  void* Ptr = mmap(nullptr, MAILBOX_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, FD, 0);
++  close(FD);
++  return Ptr == MAP_FAILED ? nullptr : static_cast<Mailbox*>(Ptr);
++}
++
++inline void CloseRemote(Mailbox* MB) {
++  munmap(MB, MAILBOX_SIZE);
++}
++
++// Tracee side: create the calling thread's mailbox. The first call in a process also removes mailboxes of threads
++// that no longer exist (left behind by crashes or exit_group).
++inline Mailbox* CreateLocal(uint32_t TID) {
++  static std::atomic<bool> CleanedStale {};
++  if (!CleanedStale.exchange(true)) {
++    if (DIR* D = opendir("/dev/shm")) {
++      while (auto* E = readdir(D)) {
++        unsigned Tid {};
++        if (sscanf(E->d_name, "fexhwbp-%u", &Tid) == 1) {
++          char Proc[64];
++          snprintf(Proc, sizeof(Proc), "/proc/%u", Tid);
++          if (access(Proc, F_OK) != 0) {
++            char Stale[64];
++            MailboxPath(Stale, sizeof(Stale), Tid);
++            unlink(Stale);
++          }
++        }
++      }
++      closedir(D);
++    }
++  }
++  char Path[64];
++  MailboxPath(Path, sizeof(Path), TID);
++  const int FD = open(Path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
++  if (FD < 0) {
++    return nullptr;
++  }
++  if (ftruncate(FD, MAILBOX_SIZE) != 0) {
++    close(FD);
++    unlink(Path);
++    return nullptr;
++  }
++  void* Ptr = mmap(nullptr, MAILBOX_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, FD, 0);
++  close(FD);
++  if (Ptr == MAP_FAILED) {
++    unlink(Path);
++    return nullptr;
++  }
++  return static_cast<Mailbox*>(Ptr);
++}
++
++inline void DestroyLocal(void* MB, uint32_t TID) {
++  if (!MB) {
++    return;
++  }
++  munmap(MB, MAILBOX_SIZE);
++  char Path[64];
++  MailboxPath(Path, sizeof(Path), TID);
++  unlink(Path);
++}
++} // namespace FEX::HLE::HWBP
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
+index a7a432b..86637d6 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
+@@ -40,6 +40,7 @@ $end_info$
+ #include <FEXCore/fextl/vector.h>
+ #include <FEXHeaderUtils/Filesystem.h>
+ #include <FEXHeaderUtils/Syscalls.h>
++#include "LinuxSyscalls/HWBP.h"
+ 
+ #include <algorithm>
+ #include <alloca.h>
+@@ -909,6 +910,72 @@ void SyscallHandler::HandleSyscall(FEXCore::Core::CpuStateFrame* Frame) {
+   // Skip past the `syscall` or `int 0x80` instruction. Both of which are 2-bytes.
+   auto Thread = FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame);
+   Thread->Thread->CurrentFrame->State.rip += 2;
++
++  if (Is64Bit && FEX::HLE::HWBP::Enabled()) [[unlikely]] {
++    // Local experiment (GameSpark): pick up debug registers that the tracer (wineserver) wrote into our mailbox.
++    if (!Thread->HWBPMailbox) {
++      if (!Thread->HWBPTried) {
++        Thread->HWBPTried = true;
++        Thread->HWBPMailbox = FEX::HLE::HWBP::CreateLocal(FHU::Syscalls::gettid());
++      }
++      return;
++    }
++    auto* MB = static_cast<FEX::HLE::HWBP::Mailbox*>(Thread->HWBPMailbox);
++    auto& State = Thread->Thread->CurrentFrame->State;
++    const uint64_t Version = MB->Version.load(std::memory_order_acquire);
++    if (Version == Thread->HWBPAppliedVersion) {
++      if (State.hwbp_dr6 != Thread->HWBPPublishedDR6) {
++        MB->DR[6] = State.hwbp_dr6;
++        Thread->HWBPPublishedDR6 = State.hwbp_dr6;
++      }
++      return;
++    }
++    Thread->HWBPAppliedVersion = Version;
++    const uint64_t DR7 = MB->DR[7];
++    uint64_t NewMask {};
++    uint64_t NewAddr[4];
++    for (uint32_t i = 0; i < 4; ++i) {
++      NewAddr[i] = MB->DR[i];
++      const bool Enabled = (DR7 >> (i * 2)) & 3;
++      const uint32_t RW = (DR7 >> (16 + i * 4)) & 3;
++      if (!Enabled) {
++        continue;
++      }
++      if (RW == 0) {
++        NewMask |= 1ULL << i;
++      } else {
++        LogMan::Msg::IFmt("HWBP: data breakpoint DR{} (type {}) at 0x{:x} is not supported", i, RW, NewAddr[i]);
++      }
++    }
++    State.hwbp_dr6 = MB->DR[6];
++    Thread->HWBPPublishedDR6 = MB->DR[6];
++    const uint64_t OldMask = State.hwbp_mask;
++    uint64_t OldAddr[4];
++    memcpy(OldAddr, State.hwbp_addr, sizeof(OldAddr));
++    for (uint32_t i = 0; i < 4; ++i) {
++      if (NewMask & (1ULL << i)) {
++        CTX->HWBPAddressRef(NewAddr[i], true);
++      }
++    }
++    memcpy(State.hwbp_addr, NewAddr, sizeof(NewAddr));
++    State.hwbp_mask = NewMask;
++    for (uint32_t i = 0; i < 4; ++i) {
++      if (OldMask & (1ULL << i)) {
++        CTX->HWBPAddressRef(OldAddr[i], false);
++      }
++    }
++    // Recompile around newly armed addresses so they start a unit with the entry check.
++    for (uint32_t i = 0; i < 4; ++i) {
++      if ((NewMask & (1ULL << i)) && !((OldMask & (1ULL << i)) && OldAddr[i] == NewAddr[i])) {
++        TM.InvalidateGuestCodeRange(Thread->Thread, NewAddr[i], 1);
++      }
++    }
++    if (getenv("FEX_GSHWBP_LOG")) {
++      fprintf(stderr, "FEX HWBP: tid %u DR7=0x%lx exec-mask=0x%lx DR0-3=%lx %lx %lx %lx\n", (unsigned)FHU::Syscalls::gettid(),
++              (unsigned long)DR7, (unsigned long)NewMask, (unsigned long)NewAddr[0], (unsigned long)NewAddr[1],
++              (unsigned long)NewAddr[2], (unsigned long)NewAddr[3]);
++    }
++  }
+ }
+ 
+ #ifdef DEBUG_STRACE
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Info.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Info.cpp
+index 1b61282..bbff76a 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Info.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Info.cpp
+@@ -6,6 +6,7 @@ $end_info$
+ */
+ 
+ #include "LinuxSyscalls/Syscalls.h"
++#include "LinuxSyscalls/HWBP.h"
+ #include "LinuxSyscalls/x64/Syscalls.h"
+ #include "LinuxSyscalls/x32/Syscalls.h"
+ 
+@@ -107,6 +108,28 @@ void RegisterInfo(FEX::HLE::SyscallHandler* Handler) {
+         // Passthrough these requests. Allows Wine to run the Ubisoft launcher.
+         Result = ::syscall(SYSCALL_DEF(ptrace), request, pid, addr, data);
+         SYSCALL_ERRNO();
++      case PTRACE_PEEKUSER:
++      case PTRACE_POKEUSER: {
++        // Local experiment (GameSpark): x86 debug registers through the tracee's mailbox (LinuxSyscalls/HWBP.h).
++        const uint64_t Offset = reinterpret_cast<uint64_t>(addr);
++        if (!FEX::HLE::HWBP::Enabled() || Offset < FEX::HLE::HWBP::DEBUGREG_OFFSET ||
++            Offset >= FEX::HLE::HWBP::DEBUGREG_OFFSET + 8 * 8 || (Offset & 7)) {
++          break;
++        }
++        auto* MB = FEX::HLE::HWBP::OpenRemote(pid);
++        if (!MB) {
++          break;
++        }
++        const size_t Index = (Offset - FEX::HLE::HWBP::DEBUGREG_OFFSET) / 8;
++        if (request == PTRACE_POKEUSER) {
++          MB->DR[Index] = reinterpret_cast<uint64_t>(data);
++          MB->Version.fetch_add(1, std::memory_order_release);
++        } else {
++          *reinterpret_cast<uint64_t*>(data) = MB->DR[Index];
++        }
++        FEX::HLE::HWBP::CloseRemote(MB);
++        return 0;
++      }
+       default: break;
+       }
+       // We don't support this
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
+index 69e10b3..991cf9a 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.cpp
+@@ -5,6 +5,7 @@
+ #include "LinuxSyscalls/Syscalls.h"
+ #include "LinuxSyscalls/SignalDelegator.h"
+ #include "LinuxSyscalls/Seccomp/SeccompEmulator.h"
++#include "LinuxSyscalls/HWBP.h"
+ 
+ #include <FEXHeaderUtils/Syscalls.h>
+ #include <FEXCore/Utils/Allocator.h>
+@@ -302,6 +303,7 @@ void ThreadManager::HandleThreadDeletion(FEX::HLE::ThreadStateObject* Thread, bo
+ 
+   CTX->DestroyThread(Thread->Thread);
+   FEX::HLE::_SyscallHandler->SeccompEmulator.FreeSeccompFilters(Thread);
++  FEX::HLE::HWBP::DestroyLocal(Thread->HWBPMailbox, Thread->ThreadInfo.TID);
+ 
+   delete Thread;
+   --IdleWaitRefCount;
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
+index dfcd4b0..fe3c791 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/ThreadManager.h
+@@ -92,6 +92,12 @@ struct ThreadStateObject : public FEXCore::Allocator::FEXAllocOperators {
+   // personality emulation.
+   uint32_t persona {};
+ 
++  // Local experiment (GameSpark): x86 debug register mailbox (LinuxSyscalls/HWBP.h).
++  void* HWBPMailbox {};
++  uint64_t HWBPAppliedVersion {};
++  uint64_t HWBPPublishedDR6 {};
++  bool HWBPTried {};
++
+   FEXCore::Core::NonMovableUniquePtr<FEXCore::Threads::Thread> ExecutionThread;
+ 
+   // Thread signaling information
+-- 
+2.43.0
+

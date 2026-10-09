@@ -1,0 +1,65 @@
+From cc71800a7b22ad983bfbb60d757c13088496e594 Mon Sep 17 00:00:00 2001
+From: GameSpark <gamespark@localhost>
+Date: Fri, 9 Oct 2026 13:55:47 -0700
+Subject: [PATCH 1/2] seccomp: make emulated SECCOMP_RET_TRAP behave like Linux
+
+Local GameSpark patch, not submitted upstream (FEX does not accept AI-generated code).
+
+Proton's Wine installs a seccomp filter (FEX_NEEDSSECCOMP=1 lets FEX emulate it) that traps raw `syscall`
+instructions made from Windows code (Denuvo does this) and emulates them in its SIGSYS handler. Under FEX 2610
+the trapped syscall was also executed as a Linux syscall, and the SIGSYS frame's RIP pointed at the syscall
+instruction instead of after it, so Wine returned two bytes early and the syscall ran again in a loop.
+Like the kernel: skip the syscall, leave RAX holding the syscall number, report the RIP after the 2-byte
+instruction (si_call_addr) in the frame, and keep the RAX the guest handler left when it does not change RIP.
+---
+ .../LinuxSyscalls/Seccomp/SeccompEmulator.cpp             | 8 ++++++--
+ .../LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp      | 4 ++++
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp
+index 7b0e9f9..1b3b674 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp
+@@ -429,18 +429,22 @@ SeccompEmulator::ExecuteFilter(FEXCore::Core::CpuStateFrame* Frame, uint64_t JIT
+     break;
+   }
+   case SECCOMP_RET_TRAP: {
++    // Local experiment: like Linux, skip the system call, roll RAX back to the syscall number and report the
++    // instruction pointer after the 2-byte syscall instruction (syscall, int 0x80 and sysenter are all 2 bytes).
++    Frame->State.gregs[FEXCore::X86State::REG_RAX] = Args->Argument[0];
+     siginfo_t Info {
+       .si_signo = SIGSYS,
+       .si_errno = static_cast<int32_t>(DataMasked),
+       .si_code = 1, // SYS_SECCOMP
+     };
+ 
+-    Info.si_call_addr = reinterpret_cast<void*>(RIP);
++    Info.si_call_addr = reinterpret_cast<void*>(RIP + 2);
+     Info.si_syscall = Args->Argument[0];
+     Info.si_arch = Arch;
+ 
+     SignalDelegation->QueueSignal(::getpid(), ::gettid(), SIGSYS, &Info, true);
+-    break;
++    // The signal is delivered synchronously inside QueueSignal; keep the RAX the guest handler left behind.
++    return {true, Frame->State.gregs[FEXCore::X86State::REG_RAX]};
+   }
+   case SECCOMP_RET_ERRNO: {
+     // errno return is clamped.
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+index 6d6c899..b367656 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+@@ -356,6 +356,10 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
+   siginfo_t* HostSigInfo = reinterpret_cast<siginfo_t*>(info);
+ 
+   ContextBackup->OriginalRIP = Thread->CurrentFrame->State.rip;
++  if (Signal == SIGSYS && HostSigInfo->si_code == 1 /* SYS_SECCOMP */) {
++    // Local experiment: like Linux, a seccomp trap's frame resumes after the syscall instruction (si_call_addr).
++    ContextBackup->OriginalRIP = reinterpret_cast<uint64_t>(HostSigInfo->si_call_addr);
++  }
+   uint32_t eflags = CTX->ReconstructCompactedEFLAGS(Thread, false, nullptr, 0);
+ 
+   if (Is64BitMode) {
+-- 
+2.43.0
+
