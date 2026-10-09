@@ -9,7 +9,7 @@ measurably help, and the data.
 
 **Status:** early. Tested on one Spark with Canonical's arm64 Steam snap and a system FEX. Results so far cover
 Cyberpunk 2077 (DirectX 12), Rise of the Tomb Raider (DirectX 11 vs 12), Red Dead Redemption 2 (DirectX 12) and
-The Witcher 3 (DirectX 12, measured at a player's save).
+The Witcher 3 (DirectX 12, measured at a player's save). STAR WARS: Galactic Racer (Denuvo) does not start yet.
 
 ## Results so far
 
@@ -28,6 +28,10 @@ Red Dead Redemption 2 (FEX 2610 setup, DX12, 1080p, the game's Safe defaults, VS
 The Witcher 3 (FEX 2610 setup, DX12, 1080p, auto-detected settings, Novigrad save, VSync off): **55-63 fps with a
 35 ms stall ten times a second; 88.1 fps, 1% low 63.2, with `system/shim.sh`**, which caches one Win32 call the game
 polls and Wine makes expensive ([details](docs/FINDINGS.md#the-witcher-3-a-10-hz-am-i-online-check)).
+
+STAR WARS: Galactic Racer exits 0.6 s after starting, during Denuvo's startup checks. `tools/faultprobe.c` shows two
+places where FEX reports CPU faults differently from x86; fixing one did not help
+([details](docs/FINDINGS.md#star-wars-galactic-racer-denuvo-stops-it-under-fex)).
 
 What we learned:
 
@@ -106,7 +110,7 @@ in `profiles/launch/`.
 | `shim/`, `system/shim.sh` | Proxy DLL that caches Win32 calls Wine makes slow, its per-game installer, its check (`shim_check.c`), and a reproducer for the Wine cost (`igcs_cost.c`) |
 | `profile/` | perf + FEX perf-map profiler and the layer classifier |
 | `system/` | Per-game scheduler governor, system FEX setup, console mode, global scheduler installer |
-| `tools/` | Steam pipe helpers, launch-option editor, keyboard/mouse and virtual gamepad input, screenshots, GPU probe |
+| `tools/` | Steam pipe helpers, launch-option editor, keyboard/mouse and virtual gamepad input, screenshots, GPU probe, and a check of how FEX reports CPU faults (`faultprobe.c`) |
 | `controller/` | Bluetooth pairing for Xbox and PlayStation controllers, the BlueZ settings and Steam udev rule they need, and a check for FEX's 32-bit evdev bug |
 | `results/` | Run and profile records behind the numbers in this README |
 | `docs/` | Findings and methodology |
@@ -114,6 +118,7 @@ in `profiles/launch/`.
 ## Known issues
 
 - Games with kernel anti-cheat in online modes (EAC, BattlEye) do not run.
+- Denuvo can stop a game at startup under FEX: STAR WARS: Galactic Racer exits 0.6 s in, under FEX 2603 and 2610.
 - FEX Vulkan thunking does not reach games inside the Steam snap's container; `system/fex-system.sh` works
   around it with a second Steam under a system FEX. Run only one of the two Steams at a time.
 - `scx_lavd` crashes on GB10; `system/scheduler.sh` uses `scx_bpfland`.

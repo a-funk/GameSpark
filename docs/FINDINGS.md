@@ -295,6 +295,57 @@ still go through evdev and would show the same problem in the FEX Steam (not tes
 converting `input_event` on reads (and on uinput writes) for 32-bit guests. When `controller/evdev32_check.py`
 starts exiting 0, the rule is no longer needed.
 
+## STAR WARS: Galactic Racer: Denuvo stops it under FEX
+
+The game (Unreal Engine 5, DirectX 12, released 2026-10-06) ships Denuvo Anti-Tamper with a 5-machine activation
+limit. It does not start on the Spark, under either FEX (system 2610 or the snap's 2603). Epic's bootstrapper
+(`Launcher.exe`) starts `SWGR.exe`, which starts the game. The game exits about 0.6 s later, before Unreal writes a
+log, and `SWGR.exe` exits with code 1. Whether these attempts count against the activation limit is unknown.
+
+How it was traced:
+
+1. **Wine's exception trace.** `WINEDEBUG=+timestamp,+pid,+tid,+process,+loaddll,trace+seh` with `PROTON_LOG=1`.
+   `PROTON_LOG=1` alone also dumps an unwind backtrace for every exception, 2.5 GB in a minute.
+   - Denuvo's startup checks show up as a vectored handler that deliberately triggers faults and continues after
+     each one: about 2,400 per launch.
+   - The faults are reads of non-canonical and kernel-half addresses, plus AVX-512 BF16 and SERIALIZE instructions
+     the emulated CPU does not have.
+2. **The failure.**
+   - One read at `0x1535129EB` (`or ecx, [rbp-0x2e51fe91]`) hits `0xFFFFFFFF2F12FD84`, with `rbp` =
+     `0xFFFFFFFF5D64FC15`.
+   - Denuvo's handler declines this fault. Wine's unwinder then walks Denuvo's frameless code into a nested-fault
+     loop until the stack overflows.
+   - The address and registers are the same in every run.
+3. **Where FEX differs from x86.** `tools/faultprobe.c` raises the same kinds of faults and compares what Windows
+   code sees with a real x86-64 CPU. FEX 2610 differs in two places:
+   - A read of a non-canonical address (bits 63:47 not all equal) is reported as a page fault at that address. x86
+     raises a general-protection fault, and Windows reports address -1.
+   - A non-canonical address whose low 56 bits point at mapped memory is read with no fault at all, because ARM64
+     Linux ignores the top address byte.
+
+   SERIALIZE, AVX-512, `ud2`, `hlt` and `in` all match. FEX also hands Wine SIGILL with trap number 0 instead of 6,
+   which Wine logs as "Got unexpected trap 0". Wine maps both to the same exception, so programs cannot see it.
+4. **Ruled out.** Each of these still fails at the same instruction with the same registers:
+   - The first difference. A local FEX 2610 build that reports non-canonical faults as general-protection faults
+     makes the probe match there, and the game fails the same way.
+   - FEX's `SMCChecks=full` (Denuvo modifies its own code) and `HideHypervisorBit`, set through a per-executable FEX
+     AppConfig. A renamed test program confirmed that the AppConfig applies.
+   - The FEX version: the snap's FEX 2603 fails the same way.
+
+   Valve's ARM64 Proton builds ("Proton Experimental (ARM64)", listed for the Steam Frame) are not offered by
+   either Steam here. With that tool mapped, Steam ran `Launcher.exe` with no Proton at all.
+5. **Open.** The bad pointer comes from Denuvo's virtual-machine state. `rbp` looks like a 32-bit value with the
+   upper half set. With the upper half clear, the address would be an ordinary `0x2F12FD84`. Two candidates remain:
+   - the second difference, where a read that faults on x86 silently succeeds on ARM;
+   - an instruction FEX emulates differently.
+
+   Telling them apart needs an instruction-level comparison against a real x86 CPU.
+
+FEX does not accept AI-written code (its `CONTRIBUTING.md`), so the local build was only an experiment. The way to
+pass this on is a report with the probe and the trace. Also note that Steam asks which launch option to use (Play,
+or Reinstall Epic Online Services) until "Don't ask again" is chosen. While that prompt is pending, launches sent
+through the Steam pipe go nowhere.
+
 ## The scheduler is a per-game choice
 
 | Game | Default scheduler | `scx_bpfland -m performance` | Effect |
