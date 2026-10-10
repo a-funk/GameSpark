@@ -440,8 +440,8 @@ HUD, and loses the terrain or shows fully shaded engines without motion blur. Ne
   regression with intermittent flashes ([#3355](https://github.com/HansKristian-Work/vkd3d-proton/issues/3355): that
   early return skips a pending device-generated-commands flush). Cheapest test:
   `r.D3D12.PreferredBarrierImplementation=2` in Engine.ini, so Unreal uses enhanced barriers, which vkd3d-proton
-  translates without deferring. Then Proton 11.0 as the game's compatibility tool (its vkd3d-proton, 212991fc, has none of these changes), the v3.0.1 DLLs, or a
-  44cf7c20 build with the fix proposed in #3355. Turning off `VK_EXT_device_generated_commands` is not a clean test:
+  translates without deferring. Then Proton 11.0 as the game's compatibility tool (its vkd3d-proton, 212991fc, has
+  none of these changes), the v3.0.1 DLLs, or a 44cf7c20 build with the fix proposed in #3355. Turning off `VK_EXT_device_generated_commands` is not a clean test:
   vkd3d then drops the state changes such indirect draws carry, which breaks rendering by itself.
 - **NVIDIA's driver.** DGX Spark supports only the R580 branch, and the fixes that could matter are only in Vulkan
   betas: a "race condition between Vulkan graphics and DLSS" and "D32 formatted images [...] corrupted after being
