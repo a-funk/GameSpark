@@ -416,11 +416,28 @@ one). The flash frames in motion survived everything else:
 | `FEX_VECTORTSOENABLED=1 FEX_MEMCPYSETTSOENABLED=1 FEX_HALFBARRIERTSOENABLED=0` (58-63 fps) | x86 memory ordering lost in translation | still there |
 | `r.Nanite=0` | Nanite | **gone** |
 
-So the cause is in Nanite's rendering on this stack, not CPU timing or memory ordering; it is not identified yet.
-Untested candidates: the six wave64 compute pipelines that fail at startup ("Required WaveSize range [64, 64], but
-supported range is [32, 32]"), Nanite's compute rasterizer (`r.Nanite.ComputeRasterization=0`), and the driver
-(580.173.02; vkd3d-proton 3.1 turns some features off on NVIDIA drivers before 595). Nanite off was first tried at
-the original high settings with ray tracing and ran too slowly; at medium with the fixes below it averages 83 fps.
+So it takes Nanite to trigger it, and it is not CPU timing or memory ordering. Whether it breaks in Unreal, in
+vkd3d-proton or in the driver is not known yet. Nanite off was first tried at the original high settings with ray
+tracing and ran too slowly; at medium with the fixes below it averages 83 fps.
+
+A research pass (four lanes: vkd3d-proton, NVIDIA driver, FEX, Unreal 5.7 source) found no report of this exact
+symptom. Next tests, cheapest first:
+- **vkd3d-proton.** This Proton Experimental (2026-10-01) carries vkd3d-proton master 44cf7c20, 439 commits after
+  v3.0.1, including an open NVIDIA regression with intermittent flashes
+  ([#3355](https://github.com/HansKristian-Work/vkd3d-proton/issues/3355): a COPY-barrier early return skips a
+  pending device-generated-commands flush) and new ClearUAV and barrier code. Tests: Proton 11.0 (older vkd3d-proton)
+  as the game's compatibility tool, or `VKD3D_DISABLE_EXTENSIONS=VK_EXT_device_generated_commands`.
+- **DLSS.** NVIDIA's Vulkan beta 595.44.15 fixed "race condition between Vulkan graphics and DLSS that can sometimes
+  cause a corruption"; DGX Spark supports only the R580 branch. Test: TSR instead of DLSS, before any driver change.
+- **Unreal.** Scene captures rendered inside the main renderer, and transient-resource aliasing:
+  `r.SceneCapture.AllowRenderInMainRenderer=0`, `r.RDG.TransientAllocator=0` with
+  `r.RDG.TransientExtractedResources=0`.
+
+Ruled out on paper: the six wave64 pipelines that fail at startup ("Required WaveSize range [64, 64], but supported
+range is [32, 32]") are Lumen, TSR, Substrate and hair-strand permutations that Unreal selects only when the GPU
+reports 64-wide waves; and the dxil-spirv fix for "rapid flickering and disappearing surfaces" on NVIDIA
+([#312](https://github.com/HansKristian-Work/dxil-spirv/issues/312)) applies only without `VK_NV_raw_access_chains`,
+which this driver has.
 
 **Hitches: pinning that did not hold.** At medium with Nanite on the frame log showed about 1.3 spikes a second
 (median 26.6 ms against 12.3 ms frames), at irregular intervals, more on some sections of a track than others.
