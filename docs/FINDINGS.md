@@ -421,12 +421,18 @@ vkd3d-proton or in the driver is not known yet. Nanite off was first tried at th
 tracing and ran too slowly; at medium with the fixes below it averages 83 fps.
 
 A research pass (four lanes: vkd3d-proton, NVIDIA driver, FEX, Unreal 5.7 source) found no report of this exact
-symptom. Next tests, cheapest first:
+symptom. The closest is Talos Principle 2 (Unreal 5): random single glitchy frames that went away with a setting that
+turns Nanite off were an AMD driver bug in Mesa
+([vkd3d-proton #1732](https://github.com/HansKristian-Work/vkd3d-proton/issues/1732)). Next tests, cheapest first:
 - **vkd3d-proton.** This Proton Experimental (2026-10-01) carries vkd3d-proton master 44cf7c20, 439 commits after
-  v3.0.1, including an open NVIDIA regression with intermittent flashes
-  ([#3355](https://github.com/HansKristian-Work/vkd3d-proton/issues/3355): a COPY-barrier early return skips a
-  pending device-generated-commands flush) and new ClearUAV and barrier code. Tests: Proton 11.0 (older vkd3d-proton)
-  as the game's compatibility tool, or `VKD3D_DISABLE_EXTENSIONS=VK_EXT_device_generated_commands`.
+  v3.0.1. Since August those commits changed COPY barriers, ClearUAV, fence waits on NVIDIA and Reflex's queue
+  handling, and no setting turns the first three off. The barrier change (238f157e) brought an open NVIDIA regression
+  with intermittent flashes ([#3355](https://github.com/HansKristian-Work/vkd3d-proton/issues/3355): a COPY-barrier
+  early return skips a pending device-generated-commands flush). Cheap A/Bs first: Reflex off in-game, and
+  `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer`. Then the clean tests: Proton 11.0 as the game's compatibility
+  tool (its vkd3d-proton, 212991fc, has none of these changes), or only `d3d12.dll` and `d3d12core.dll` swapped for a
+  44cf7c20 build with the fix proposed in #3355. Turning off `VK_EXT_device_generated_commands` is not a clean test:
+  vkd3d then drops the state changes such indirect draws carry, which breaks rendering by itself.
 - **DLSS.** NVIDIA's Vulkan beta 595.44.15 fixed "race condition between Vulkan graphics and DLSS that can sometimes
   cause a corruption"; DGX Spark supports only the R580 branch. Test: TSR instead of DLSS, before any driver change.
 - **Unreal.** Scene captures rendered inside the main renderer, and transient-resource aliasing:
