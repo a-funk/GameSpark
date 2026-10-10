@@ -1,6 +1,6 @@
-From b01c7ae0000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From e9f0600000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: GameSpark <gamespark@localhost>
-Date: Fri, 9 Oct 2026 17:10:00 -0700
+Date: Fri, 9 Oct 2026 23:30:00 -0700
 Subject: [PATCH 1/2] seccomp: make emulated SECCOMP_RET_TRAP behave like Linux
 
 Local GameSpark patch, not submitted upstream (FEX does not accept AI-generated code).
@@ -16,29 +16,38 @@ dispatcher's syscall stub delivers it once the syscall handler has returned. Del
 leaked the handler's host stack frames whenever the guest handler changed RIP, which Wine's always does: FEX resumes
 its dispatcher on the stack it was interrupted on. That was ~750 bytes per trapped syscall, so a thread died after
 ~11,000 of them (Galactic Racer's Denuvo threads reach that a few minutes in).
+
+The stub touches the interrupt page on every syscall return (only the count drop is conditional), like
+EmitSignalGuardedRegion's exit: a signal deferred in the trap window behind the SIGSYS (wineserver's SIGUSR1 for
+NtSuspendThread/NtGetContextThread) would otherwise stay queued after the RIP-changing SIGSYS return until the
+thread next compiled code, hanging the thread that waits for its context.
 ---
- .../Interface/Core/Dispatcher/Dispatcher.cpp  | 21 +++++++++++++++++++
- .../LinuxSyscalls/Seccomp/SeccompEmulator.cpp | 11 ++++++++--
- 2 files changed, 30 insertions(+), 2 deletions(-)
+ .../Interface/Core/Dispatcher/Dispatcher.cpp  | 24 +++++++++++++++++++
+ .../LinuxSyscalls/Seccomp/SeccompEmulator.cpp | 11 +++++++--
+ 2 files changed, 33 insertions(+), 2 deletions(-)
 
 diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
-index 2f4babd..624b644 100644
+index 2f4babd..5efa1d6 100644
 --- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
 +++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
-@@ -546,6 +546,27 @@ void Dispatcher::EmitDispatcher() {
+@@ -546,6 +546,30 @@ void Dispatcher::EmitDispatcher() {
      // We can safely claim we are no longer in a syscall
      str(ARMEmitter::XReg::zr, STATE, offsetof(FEXCore::Core::CpuStateFrame, InSyscallInfo));
  
 +#ifndef _WIN32
 +    // Local experiment: a seccomp-trapped syscall returns with its SIGSYS deferred and DeferredSignalRefCount raised
-+    // (SeccompEmulator, SECCOMP_RET_TRAP). Deliver it here, where the guest state is complete and the syscall
-+    // handler's frames are gone, like EmitSignalGuardedRegion's exit.
++    // (SeccompEmulator, SECCOMP_RET_TRAP). Drop that count here, where the guest state is complete and the syscall
++    // handler's frames are gone, then touch the interrupt page on every syscall return, like EmitSignalGuardedRegion's
++    // exit. That delivers the SIGSYS. A signal deferred behind one whose handler changed RIP (Wine's sigsys_handler
++    // always does; the loop top it resumes at never touches the page) is then delivered at the thread's next syscall
++    // instead of staying queued until its next compile.
 +    {
 +      ARMEmitter::ForwardLabel NoDeferredSignal;
 +      ldr(TMP2, STATE, offsetof(FEXCore::Core::CPUState, DeferredSignalRefCount));
 +      (void)cbz(ARMEmitter::Size::i64Bit, TMP2, &NoDeferredSignal);
 +      sub(ARMEmitter::Size::i64Bit, TMP2, TMP2, 1);
 +      str(TMP2, STATE, offsetof(FEXCore::Core::CPUState, DeferredSignalRefCount));
++      (void)Bind(&NoDeferredSignal);
 +      constexpr size_t InterruptPageOffset =
 +        offsetof(FEXCore::Core::InternalThreadState, InterruptFaultPage) - offsetof(FEXCore::Core::InternalThreadState, BaseFrameState);
 +      if constexpr (InterruptPageOffset <= 32760) {
@@ -46,7 +55,6 @@ index 2f4babd..624b644 100644
 +      } else {
 +        str(ARMEmitter::QReg::q0, STATE, InterruptPageOffset);
 +      }
-+      (void)Bind(&NoDeferredSignal);
 +    }
 +#endif
 +
