@@ -8,6 +8,8 @@
 #                                 FEX_BINARY=gamespark to run the game under GameSpark's patched FEX build
 #                                 (system/fex-patched.sh; FEX_BINARY=/path/to/FEX for any other build). If that
 #                                 build is missing the game is not started: its FEX_* settings need it.
+#   profiles/launch/<appid>.Engine.ini  an Unreal Engine game's Engine.ini, written into its Wine prefix before every
+#                                 launch (with UE_PROJECT=<folder under AppData/Local> in the .env)
 #   $SG_DATA/launch/run.env       settings for every game while a benchmark run is active (bench/run.sh writes and
 #                                 removes it), e.g. MangoHud frame-time logging
 # Both are KEY=VALUE lines (no quotes needed; # comments allowed). A CONTAINER_ prefix sets the variable inside Steam's
@@ -49,6 +51,18 @@ if [ "$fexbin" = gamespark ]; then
 fi
 if [ -n "$fexbin" ]; then
   if [ -x "$fexbin" ]; then args=("$fexbin" "${args[@]}"); else warn=" not launched: run system/fex-patched.sh install"; fexbin="$fexbin (missing)"; fi
+fi
+# Unreal Engine games: profiles/launch/<appid>.Engine.ini replaces the game's Saved/Config/Windows/Engine.ini in the
+# Wine prefix on every launch (UE_PROJECT in the .env names its folder under AppData/Local). A one-time copy is not
+# enough: Galactic Racer deletes the file after reading it at startup.
+ini=$ROOT/profiles/launch/$app.Engine.ini
+if [ -f "$ini" ]; then
+  cfg=${STEAM_COMPAT_DATA_PATH:-}/pfx/drive_c/users/steamuser/AppData/Local/${UE_PROJECT:-}/Saved/Config/Windows
+  if [ -n "${UE_PROJECT:-}" ] && [ -n "${STEAM_COMPAT_DATA_PATH:-}" ] && mkdir -p "$cfg" && cp "$ini" "$cfg/Engine.ini"; then
+    applied+=("$(basename "$ini")")
+  else
+    warn+=" WARNING: $(basename "$ini") not applied (needs UE_PROJECT and Steam's STEAM_COMPAT_DATA_PATH)"
+  fi
 fi
 [ -n "$warn" ] && echo "launch.sh:$warn" >&2
 mkdir -p "$D" && echo "$(date '+%F %T') app $app applied: ${applied[*]:-none}${SWAP_TO:+ (exe -> $SWAP_TO)}${inner[*]:+ (in container: ${inner[*]})}${EXTRA_ARGS:+ (args: $EXTRA_ARGS)}${fexbin:+ (FEX: $fexbin)}$warn" >> "$D/launches.log"

@@ -29,9 +29,11 @@ The Witcher 3 (FEX 2610 setup, DX12, 1080p, auto-detected settings, Novigrad sav
 35 ms stall ten times a second; 88.1 fps, 1% low 63.2, with `system/shim.sh`**, which caches one Win32 call the game
 polls and Wine makes expensive ([details](docs/FINDINGS.md#the-witcher-3-a-10-hz-am-i-online-check)).
 
-STAR WARS: Galactic Racer (Denuvo): stock FEX stops it 0.6 s in; **with `system/fex-patched.sh` it reaches the title
-screen at 60 fps**. Denuvo needs two things FEX 2610 lacks: Proton must catch the game's direct Windows syscalls, and
-x86 hardware breakpoints must fire ([details](docs/FINDINGS.md#star-wars-galactic-racer-what-denuvo-needs-from-fex)).
+STAR WARS: Galactic Racer (Denuvo): stock FEX stops it 0.6 s in; **with `system/fex-patched.sh` it runs**. Denuvo
+needs two things FEX 2610 lacks: Proton must catch the game's direct Windows syscalls, and x86 hardware breakpoints
+must fire ([details](docs/FINDINGS.md#star-wars-galactic-racer-what-denuvo-needs-from-fex)). Racing at medium with
+DLSS Performance: **83 fps, no flicker** with its launch profile (Nanite off, the game on the fast cores from launch,
+more audio buffering; [details](docs/FINDINGS.md#star-wars-galactic-racer-flash-frames-hitches-and-audio)).
 
 What we learned:
 
@@ -106,7 +108,7 @@ in `profiles/launch/`.
 | `bench/ingest.py` | Run record: avg and 1% low (rendered and displayed), telemetry for the benchmark window |
 | `bench/telemetry.py` | 1 Hz GPU/CPU sampler |
 | `bench/tune.py`, `profiles/` | Autotuner and the per-game, per-Steam-setup profiles it writes |
-| `tools/launch.sh`, `profiles/launch/` | Steam launch wrapper and per-game launch settings (env, executable swap, args) |
+| `tools/launch.sh`, `profiles/launch/` | Steam launch wrapper and per-game launch settings (env, executable swap, args, Unreal Engine.ini) |
 | `lib/menu.sh`, `tests/menu-replay.sh` | OCR-gated menu steps for adapters, and their replay test on saved screenshots |
 | `system/frametimes.sh` | Builds the arm64 MangoHud layer used by `bench/run.sh FRAMES=SECS` |
 | `shim/`, `system/shim.sh` | Proxy DLL that caches Win32 calls Wine makes slow, its per-game installer, its check (`shim_check.c`), and a reproducer for the Wine cost (`igcs_cost.c`) |

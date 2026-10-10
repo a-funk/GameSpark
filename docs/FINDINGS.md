@@ -378,6 +378,73 @@ go upstream as a written report.
 - A standalone run that gets past Denuvo calls `steam.exe steam://run/4078430`; with a reachable Steam that would be
   a real launch and a Denuvo activation.
 
+## STAR WARS: Galactic Racer: flash frames, hitches and audio
+
+Playable since 2026-10-10 with no flicker: medium preset, ray tracing off, DLSS Super Resolution Performance and
+Reflex on (in-game), plus three things from `profiles/launch/4078430.*`: Nanite off, the game on the 10 fast cores
+from launch, and more audio buffering. Racing at 1080p (one race each, different tracks):
+
+| Setup | Avg fps | Median frame | 99th pct frame | Flicker |
+|---|---:|---:|---:|---|
+| Medium, Nanite on, pinned to the X925 cores after launch | 75.6 | 12.7 ms | 24.7 ms | reduced; hitch about once a second |
+| + `PROTON_CPU_TOPOLOGY` (fast cores from launch) | 102.5 | 9.5 ms | 15.1 ms | flash frames throughout |
+| + `r.Nanite=0` (the profile) | 83.4 | 10.9 ms | 22.6 ms | none |
+
+**What the flicker is.** Recorded with `x11grab` at 30 fps, it is single "flash frames": one frame that disagrees
+with both neighbours while they agree with each other. In a flash frame, independently:
+- the ground is missing (a dark plane and patches of sky where the terrain should be, while rocks, debris and buildings
+  are drawn);
+- meshes that are hidden from the player camera appear: the podracer's engines, of which normally only the energy
+  binder and their shadows show; in another frame a vehicle body in the foreground vanished instead;
+- there is no motion blur at all, where the frames 33 ms before and after are heavily blurred.
+
+In a desert race about half of the moving frames had more than 1% of the lower half's 8x8-pixel tiles flash; at peaks
+90%. Earlier, two other flickers had been fixed in Engine.ini: background objects in the menu (hardware occlusion
+queries and Nanite's HZB occlusion: `r.AllowOcclusionQueries=0`, `r.Nanite.Culling.HZB=0`) and the landscape in a
+frozen scene (`r.Nanite.Streaming.ReservedResources=0`: Nanite's streaming pool as a plain buffer instead of a sparse
+one). The flash frames in motion survived everything else:
+
+| Change | Would have pointed at | Flash frames |
+|---|---|---|
+| `VKD3D_CONFIG=single_queue` | async compute racing graphics | still there |
+| `VKD3D_DISABLE_EXTENSIONS=VK_EXT_mesh_shader` | Nanite's mesh-shader raster path | still there |
+| `r.Nanite.PersistentThreadsCulling=0`, `r.Nanite.Streaming.Async=0`, `r.GPUScene.InstanceUploadViaCreate=0`, `r.PSOPrecache.ProxyCreationWhenPSOReady=0`, `r.SkipDrawOnPSOPrecaching=0` | Nanite culling, streaming, instance upload, shader precaching | still there |
+| `r.Nanite.Tessellation=0` | displaced terrain | still there (the floor too) |
+| `r.Nanite.Streaming.StreamingPoolSize=1536` (default 512; 2048 stops the game: "must be smaller than the largest allocation supported by the graphics hardware (2048MB)") | a streaming pool too small for the track | still there |
+| `r.FinishCurrentFrame=1` (60 fps) | the CPU overwriting data the GPU is still reading | still there |
+| `VKD3D_CONFIG=force_host_cached` | the GPU reading stale CPU-written upload memory (memory type 2, uncached, replaced by type 3, cached) | still there |
+| `FEX_VECTORTSOENABLED=1 FEX_MEMCPYSETTSOENABLED=1 FEX_HALFBARRIERTSOENABLED=0` (58-63 fps) | x86 memory ordering lost in translation | still there |
+| `r.Nanite=0` | Nanite | **gone** |
+
+So the cause is in Nanite's rendering on this stack, not CPU timing or memory ordering; it is not identified yet.
+Untested candidates: the six wave64 compute pipelines that fail at startup ("Required WaveSize range [64, 64], but
+supported range is [32, 32]"), Nanite's compute rasterizer (`r.Nanite.ComputeRasterization=0`), and the driver
+(580.173.02; vkd3d-proton 3.1 turns some features off on NVIDIA drivers before 595). Nanite off was first tried at
+the original high settings with ray tracing and ran too slowly; at medium with the fixes below it averages 83 fps.
+
+**Hitches: pinning that did not hold.** At medium with Nanite on the frame log showed about 1.3 spikes a second
+(median 26.6 ms against 12.3 ms frames), at irregular intervals, more on some sections of a track than others.
+- Polling the GPU at 10 Hz with `nvidia-smi` during a race added no spikes, so GPU monitoring was not the cause.
+- A 1 ms per-thread sampler (`/proc/<pid>/task/*/schedstat`) lined up with the frame log showed no single thread
+  working longer in slow frames; the threads mostly waited. (MangoHud's `elapsed` clock starts 0.1-0.2 s before
+  its CSV file exists; the offset was found where the submission threads' per-frame activity is sharpest.)
+- The game used 7.4 cores while the 10 cores it was pinned to were 37% busy. `taskset -a` after launch only moves
+  threads that exist: 172 of 181 threads were allowed on all 20 cores again, and threads named GameThread were last
+  seen on A725 cores.
+- `PROTON_CPU_TOPOLOGY=10:5,6,7,8,9,15,16,17,18,19` from launch keeps every thread on the X925 cores. The game then
+  starts 11 worker threads instead of 24, and the 99th percentile frame fell from 24.7 to 15.1 ms. Proton sets this
+  itself on arm64, but it checks `platform.machine()`, which says x86_64 under FEX. Per game: Cyberpunk lost 8% this
+  way (E9 above).
+
+**Audio dropouts.** `pw-top` showed the HDMI output running 128-sample (2.7 ms) cycles because Wine asked for very
+little buffering, and each of the game's two streams underran about 15 times a minute. Raising PipeWire's minimum
+cycle (`pw-metadata -n settings 0 clock.min-quantum 1024`) stopped it at once. Per game instead:
+`PULSE_LATENCY_MSEC=60` gave 512-sample cycles and about 1.4 underruns a minute; `90` gives 1024-sample cycles and 5
+underruns in 8 minutes.
+
+**Engine.ini.** The game deletes `Saved/Config/Windows/Engine.ini` after reading it at startup, so `tools/launch.sh`
+copies `profiles/launch/4078430.Engine.ini` into the prefix before every launch (`UE_PROJECT` names the folder).
+
 
 ## The scheduler is a per-game choice
 
