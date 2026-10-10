@@ -399,16 +399,19 @@ with both neighbours while they agree with each other. In a flash frame, indepen
 - there is no motion blur at all, where the frames 33 ms before and after are heavily blurred.
 
 In a desert race about half of the moving frames had more than 1% of the lower half's 8x8-pixel tiles flash; at peaks
-90%. Earlier, two other flickers had been fixed in Engine.ini: background objects in the menu (hardware occlusion
-queries and Nanite's HZB occlusion: `r.AllowOcclusionQueries=0`, `r.Nanite.Culling.HZB=0`) and the landscape in a
-frozen scene (`r.Nanite.Streaming.ReservedResources=0`: Nanite's streaming pool as a plain buffer instead of a sparse
-one). The flash frames in motion survived everything else:
+90%. That share overstates the bug: on the Nanite-off recording the same measure still flags 21% of racing frames
+above 1%, from things the game does on purpose (camera cuts at takedowns and at the finish, a golden hologram of the
+engines), but only 0.25% above 10% and none above 40%. Compare runs at 10% or 20%. Earlier, two other flickers had
+been fixed in Engine.ini: background objects in the menu (hardware occlusion queries and Nanite's HZB occlusion:
+`r.AllowOcclusionQueries=0`, `r.Nanite.Culling.HZB=0`) and the landscape in a frozen scene
+(`r.Nanite.Streaming.ReservedResources=0`: Nanite's streaming pool as a plain buffer instead of a sparse one). The
+flash frames in motion survived everything else:
 
 | Change | Would have pointed at | Flash frames |
 |---|---|---|
 | `VKD3D_CONFIG=single_queue` | async compute racing graphics | still there |
 | `VKD3D_DISABLE_EXTENSIONS=VK_EXT_mesh_shader` | Nanite's mesh-shader raster path | still there |
-| `r.Nanite.PersistentThreadsCulling=0`, `r.Nanite.Streaming.Async=0`, `r.GPUScene.InstanceUploadViaCreate=0`, `r.PSOPrecache.ProxyCreationWhenPSOReady=0`, `r.SkipDrawOnPSOPrecaching=0` | Nanite culling, streaming, instance upload, shader precaching | still there |
+| `r.Nanite.PersistentThreadsCulling=0`, `r.Nanite.Streaming.Async=0`, `r.PSOPrecache.ProxyCreationWhenPSOReady=0`, `r.SkipDrawOnPSOPrecaching=0` | Nanite culling, streaming, shader precaching | still there |
 | `r.Nanite.Tessellation=0` | displaced terrain | still there (the floor too) |
 | `r.Nanite.Streaming.StreamingPoolSize=1536` (default 512; 2048 stops the game: "must be smaller than the largest allocation supported by the graphics hardware (2048MB)") | a streaming pool too small for the track | still there |
 | `r.FinishCurrentFrame=1` (60 fps) | the CPU overwriting data the GPU is still reading | still there |
@@ -416,28 +419,40 @@ one). The flash frames in motion survived everything else:
 | `FEX_VECTORTSOENABLED=1 FEX_MEMCPYSETTSOENABLED=1 FEX_HALFBARRIERTSOENABLED=0` (58-63 fps) | x86 memory ordering lost in translation | still there |
 | `r.Nanite=0` | Nanite | **gone** |
 
-So it takes Nanite to trigger it, and it is not CPU timing or memory ordering. Whether it breaks in Unreal, in
-vkd3d-proton or in the driver is not known yet. Nanite off was first tried at the original high settings with ray
-tracing and ran too slowly; at medium with the fixes below it averages 83 fps.
+So it takes Nanite to trigger it, and it does not need the CPU to run ahead of the GPU. x86 memory ordering is unlikely
+but not excluded: `FEX_HALFBARRIERTSOENABLED=0` is weaker than the default for unaligned accesses, and FEX never orders
+stack accesses. `r.GPUScene.InstanceUploadViaCreate=0`, also tried, tested nothing: unlike every other setting here, it
+is not in the game's binary. The game writes no Unreal log, so a setting without a visible effect is not confirmed to
+have applied. Whether it breaks in Unreal, in vkd3d-proton or in the driver is not known yet. Nanite off was first
+tried at the original high settings with ray tracing and ran too slowly; at medium with the fixes below it averages
+83 fps.
 
-A research pass (four lanes: vkd3d-proton, NVIDIA driver, FEX, Unreal 5.7 source) found no report of this exact
-symptom. The closest is Talos Principle 2 (Unreal 5): random single glitchy frames that went away with a setting that
-turns Nanite off were an AMD driver bug in Mesa
-([vkd3d-proton #1732](https://github.com/HansKristian-Work/vkd3d-proton/issues/1732)). Next tests, cheapest first:
-- **vkd3d-proton.** This Proton Experimental (2026-10-01) carries vkd3d-proton master 44cf7c20, 439 commits after
-  v3.0.1. Since August those commits changed COPY barriers, ClearUAV, fence waits on NVIDIA and Reflex's queue
-  handling, and no setting turns the first three off. The barrier change (238f157e) brought an open NVIDIA regression
-  with intermittent flashes ([#3355](https://github.com/HansKristian-Work/vkd3d-proton/issues/3355): a COPY-barrier
-  early return skips a pending device-generated-commands flush). Cheap A/Bs first: Reflex off in-game, and
-  `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer`. Then the clean tests: Proton 11.0 as the game's compatibility
-  tool (its vkd3d-proton, 212991fc, has none of these changes), or only `d3d12.dll` and `d3d12core.dll` swapped for a
+A research pass (four lanes: vkd3d-proton, NVIDIA driver, FEX, Unreal 5.7 source, then a skeptic ranking them) found
+no report of this exact symptom. The closest is Talos Principle 2 (Unreal 5): random single glitchy frames that went
+away with a setting that turns Nanite off were an AMD driver bug in Mesa
+([vkd3d-proton #1732](https://github.com/HansKristian-Work/vkd3d-proton/issues/1732)). The game shows the engines and
+cuts the camera on purpose, so the signature to count is a single frame that reverts, keeps the camera pose and the
+HUD, and loses the terrain or shows fully shaded engines without motion blur. Next tests, likeliest cause first:
+- **vkd3d-proton's new barrier code.** This Proton Experimental (2026-10-01) carries vkd3d-proton master 44cf7c20, 439
+  commits after v3.0.1. Since August those commits changed COPY barriers, ClearUAV, fence waits on NVIDIA and Reflex's
+  queue handling, and no setting turns the first three off. The barrier change (238f157e) defers the legacy
+  COPY_DEST-to-shader-resource transitions that Unreal makes for uploaded buffers, and it brought an open NVIDIA
+  regression with intermittent flashes ([#3355](https://github.com/HansKristian-Work/vkd3d-proton/issues/3355): that
+  early return skips a pending device-generated-commands flush). Cheapest test:
+  `r.D3D12.PreferredBarrierImplementation=2` in Engine.ini, so Unreal uses enhanced barriers, which vkd3d-proton
+  translates without deferring. Then Proton 11.0 as the game's compatibility tool (its vkd3d-proton, 212991fc, has none of these changes), the v3.0.1 DLLs, or a
   44cf7c20 build with the fix proposed in #3355. Turning off `VK_EXT_device_generated_commands` is not a clean test:
   vkd3d then drops the state changes such indirect draws carry, which breaks rendering by itself.
-- **DLSS.** NVIDIA's Vulkan beta 595.44.15 fixed "race condition between Vulkan graphics and DLSS that can sometimes
-  cause a corruption"; DGX Spark supports only the R580 branch. Test: TSR instead of DLSS, before any driver change.
-- **Unreal.** Scene captures rendered inside the main renderer, and transient-resource aliasing:
-  `r.SceneCapture.AllowRenderInMainRenderer=0`, `r.RDG.TransientAllocator=0` with
-  `r.RDG.TransientExtractedResources=0`.
+- **NVIDIA's driver.** DGX Spark supports only the R580 branch, and the fixes that could matter are only in Vulkan
+  betas: a "race condition between Vulkan graphics and DLSS" and "D32 formatted images [...] corrupted after being
+  written by a transfer or compute stage" (595.44.15), a "skipped barrier after host transfer" (595.44.09). Test TSR
+  instead of DLSS first; a driver change last.
+- **Unreal's async compute and transient memory.** One run with `-DisableAsyncCompute` on the command line and
+  `r.RDG.TransientAllocator=0`, `r.RDG.TransientExtractedResources=0` in Engine.ini; split them up if it helps.
+- **Where in Nanite.** `r.Nanite.FilterPrimitives=0` (the per-view filter for hidden primitives and the landscape),
+  then `r.Nanite.ProgrammableRaster=0` (masked materials); `r.SceneCapture.AllowRenderInMainRenderer=0` in case a
+  scene capture, which by default renders without motion blur or an owner, replaces the main view.
+- Cheap, low odds: Reflex off in-game; `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer`.
 
 Ruled out on paper: the six wave64 pipelines that fail at startup ("Required WaveSize range [64, 64], but supported
 range is [32, 32]") are Lumen, TSR, Substrate and hair-strand permutations that Unreal selects only when the GPU
