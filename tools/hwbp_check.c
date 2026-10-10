@@ -40,6 +40,7 @@ int main(int argc, char **argv)
     BOOL set_ok, get_ok;
     int r1, r2;
 
+    if (!out) return 2;   /* 2: could not open the output file, not a test failure */
     target = (void *)target_fn;
     AddVectoredExceptionHandler(1, veh);
     c.Dr0 = (DWORD64)target_fn;

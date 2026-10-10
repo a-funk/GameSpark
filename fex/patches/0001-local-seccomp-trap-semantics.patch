@@ -1,6 +1,6 @@
-From cc71800a7b22ad983bfbb60d757c13088496e594 Mon Sep 17 00:00:00 2001
+From b01c7ae0000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: GameSpark <gamespark@localhost>
-Date: Fri, 9 Oct 2026 13:55:47 -0700
+Date: Fri, 9 Oct 2026 17:10:00 -0700
 Subject: [PATCH 1/2] seccomp: make emulated SECCOMP_RET_TRAP behave like Linux
 
 Local GameSpark patch, not submitted upstream (FEX does not accept AI-generated code).
@@ -9,24 +9,64 @@ Proton's Wine installs a seccomp filter (FEX_NEEDSSECCOMP=1 lets FEX emulate it)
 instructions made from Windows code (Denuvo does this) and emulates them in its SIGSYS handler. Under FEX 2610
 the trapped syscall was also executed as a Linux syscall, and the SIGSYS frame's RIP pointed at the syscall
 instruction instead of after it, so Wine returned two bytes early and the syscall ran again in a loop.
-Like the kernel: skip the syscall, leave RAX holding the syscall number, report the RIP after the 2-byte
-instruction (si_call_addr) in the frame, and keep the RAX the guest handler left when it does not change RIP.
----
- .../LinuxSyscalls/Seccomp/SeccompEmulator.cpp             | 8 ++++++--
- .../LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp      | 4 ++++
- 2 files changed, 10 insertions(+), 2 deletions(-)
 
+Like the kernel: skip the syscall, leave RAX holding the syscall number, and raise SIGSYS on the way back to the
+guest with RIP after the 2-byte instruction. The signal is queued as deferred (DeferredSignalRefCount) and the
+dispatcher's syscall stub delivers it once the syscall handler has returned. Delivering it from inside the handler
+leaked the handler's host stack frames whenever the guest handler changed RIP, which Wine's always does: FEX resumes
+its dispatcher on the stack it was interrupted on. That was ~750 bytes per trapped syscall, so a thread died after
+~11,000 of them (Galactic Racer's Denuvo threads reach that a few minutes in).
+---
+ .../Interface/Core/Dispatcher/Dispatcher.cpp  | 21 +++++++++++++++++++
+ .../LinuxSyscalls/Seccomp/SeccompEmulator.cpp | 11 ++++++++--
+ 2 files changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+index 2f4babd..624b644 100644
+--- a/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
++++ b/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp
+@@ -546,6 +546,27 @@ void Dispatcher::EmitDispatcher() {
+     // We can safely claim we are no longer in a syscall
+     str(ARMEmitter::XReg::zr, STATE, offsetof(FEXCore::Core::CpuStateFrame, InSyscallInfo));
+ 
++#ifndef _WIN32
++    // Local experiment: a seccomp-trapped syscall returns with its SIGSYS deferred and DeferredSignalRefCount raised
++    // (SeccompEmulator, SECCOMP_RET_TRAP). Deliver it here, where the guest state is complete and the syscall
++    // handler's frames are gone, like EmitSignalGuardedRegion's exit.
++    {
++      ARMEmitter::ForwardLabel NoDeferredSignal;
++      ldr(TMP2, STATE, offsetof(FEXCore::Core::CPUState, DeferredSignalRefCount));
++      (void)cbz(ARMEmitter::Size::i64Bit, TMP2, &NoDeferredSignal);
++      sub(ARMEmitter::Size::i64Bit, TMP2, TMP2, 1);
++      str(TMP2, STATE, offsetof(FEXCore::Core::CPUState, DeferredSignalRefCount));
++      constexpr size_t InterruptPageOffset =
++        offsetof(FEXCore::Core::InternalThreadState, InterruptFaultPage) - offsetof(FEXCore::Core::InternalThreadState, BaseFrameState);
++      if constexpr (InterruptPageOffset <= 32760) {
++        str(ARMEmitter::XReg::zr, STATE, InterruptPageOffset);
++      } else {
++        str(ARMEmitter::QReg::q0, STATE, InterruptPageOffset);
++      }
++      (void)Bind(&NoDeferredSignal);
++    }
++#endif
++
+     // Now go back to the regular dispatcher loop
+     (void)b(&LoopTop);
+   }
 diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp
-index 7b0e9f9..1b3b674 100644
+index 7b0e9f9..229ef8e 100644
 --- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp
 +++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Seccomp/SeccompEmulator.cpp
-@@ -429,18 +429,22 @@ SeccompEmulator::ExecuteFilter(FEXCore::Core::CpuStateFrame* Frame, uint64_t JIT
+@@ -429,18 +429,25 @@ SeccompEmulator::ExecuteFilter(FEXCore::Core::CpuStateFrame* Frame, uint64_t JIT
      break;
    }
    case SECCOMP_RET_TRAP: {
-+    // Local experiment: like Linux, skip the system call, roll RAX back to the syscall number and report the
-+    // instruction pointer after the 2-byte syscall instruction (syscall, int 0x80 and sysenter are all 2 bytes).
-+    Frame->State.gregs[FEXCore::X86State::REG_RAX] = Args->Argument[0];
++    // Local experiment: like Linux, skip the system call, leave the syscall number in RAX and raise SIGSYS on the
++    // way back to the guest, after the 2-byte syscall instruction (syscall, int 0x80 and sysenter are all 2 bytes).
++    // The signal stays deferred (DeferredSignalRefCount) until the dispatcher's syscall stub delivers it, once this
++    // handler's frames are gone. Delivered from in here, a guest handler that changes RIP (Wine's sigsys_handler
++    // does) resumes at the dispatcher loop on the stack below these frames: ~750 bytes leaked per trapped syscall,
++    // until the 8 MB host stack ran out after ~11,000 of them on one thread.
      siginfo_t Info {
        .si_signo = SIGSYS,
        .si_errno = static_cast<int32_t>(DataMasked),
@@ -38,28 +78,13 @@ index 7b0e9f9..1b3b674 100644
      Info.si_syscall = Args->Argument[0];
      Info.si_arch = Arch;
  
++    Frame->State.DeferredSignalRefCount.Increment(1);
      SignalDelegation->QueueSignal(::getpid(), ::gettid(), SIGSYS, &Info, true);
 -    break;
-+    // The signal is delivered synchronously inside QueueSignal; keep the RAX the guest handler left behind.
-+    return {true, Frame->State.gregs[FEXCore::X86State::REG_RAX]};
++    return {true, Args->Argument[0]};
    }
    case SECCOMP_RET_ERRNO: {
      // errno return is clamped.
-diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
-index 6d6c899..b367656 100644
---- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
-+++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
-@@ -356,6 +356,10 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
-   siginfo_t* HostSigInfo = reinterpret_cast<siginfo_t*>(info);
- 
-   ContextBackup->OriginalRIP = Thread->CurrentFrame->State.rip;
-+  if (Signal == SIGSYS && HostSigInfo->si_code == 1 /* SYS_SECCOMP */) {
-+    // Local experiment: like Linux, a seccomp trap's frame resumes after the syscall instruction (si_call_addr).
-+    ContextBackup->OriginalRIP = reinterpret_cast<uint64_t>(HostSigInfo->si_call_addr);
-+  }
-   uint32_t eflags = CTX->ReconstructCompactedEFLAGS(Thread, false, nullptr, 0);
- 
-   if (Is64BitMode) {
 -- 
 2.43.0
 

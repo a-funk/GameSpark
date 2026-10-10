@@ -317,7 +317,9 @@ FEX-specific instruction bug. With two additions Box64 passed, and both addition
      of the upper half full of ones.
    - With `NeedsSeccomp=1` the call is trapped, but FEX also executed it, and its SIGSYS reported RIP at the
      `syscall` instruction instead of after it. Wine returns to `RIP + 0xb`, so it landed 2 bytes early and looped.
-   - Fix: `fex/patches/0001` (skip the syscall, keep RAX = syscall number, report the RIP after it).
+   - Fix: `fex/patches/0001`. Like Linux, it skips the syscall, keeps RAX = syscall number and raises SIGSYS on the
+     way back to the guest, with the RIP after the instruction. The signal is queued as deferred and delivered by
+     the dispatcher's syscall stub, after FEX's syscall handler has returned (see the next paragraph for why).
 2. **Hardware execute breakpoints.**
    - What Denuvo does: on every thread it arms DR3 with `NtSetContextThread` (`dr3=0x14d2b84d0, dr7=0x40`) and
      expects `EXCEPTION_SINGLE_STEP` when that address runs.
@@ -334,6 +336,20 @@ FEX-specific instruction bug. With two additions Box64 passed, and both addition
   single-steps), and the game loaded `steam_api64.dll` and asked Steam to relaunch it.
 - **Through Steam:** 165 single-steps (one per thread), about 117,000 direct syscalls handled by Wine, then
   VKD3D-Proton, DXVK, NVAPI, DLSS and EOS loaded, and the title screen showed.
+
+**A crash a few minutes in, from the first version of patch 0001.** That version delivered the SIGSYS from inside
+FEX's syscall handler. Wine's SIGSYS handler always redirects the thread into its syscall dispatcher, and when a guest
+handler changes RIP, FEX resumes at the top of its dispatcher on the host stack it was interrupted on (FEX's own
+comment calls this "only safe inside the JIT"). The handler's frames and FEX's saved context, about 750 bytes, stayed
+on the stack for every trapped syscall.
+- In the game: both real runs closed after 4.5 and 10 minutes, with no crash report and no Windows exception. In
+  both, the last thing logged was one Denuvo check thread (one of ~300, each about 1,000 trapped syscalls) that scans
+  memory with `NtQueryVirtualMemory` and had reached about 11,400 trapped syscalls. Threads that survived made at
+  most about 9,100.
+- In isolation: a thread making direct syscalls stopped between 11,000 and 11,500 calls, with its 8 MB FEX host
+  stack (`[anon:FEXMem_Misc]`) fully resident.
+- With the deferred delivery, 200,000 trapped syscalls on one thread complete; `tools/syscall_check.c` now repeats
+  30,000 on a new thread.
 
 **Ruled out along the way** (each still failed the same way): reporting non-canonical faults as #GP like x86 does;
 FEX's `SMCChecks=full`, `HideHypervisorBit` and other codegen options; FEX 2603 and FEX `main` (identical to 2610).

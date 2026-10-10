@@ -28,9 +28,12 @@ system_version() {   # e.g. 2610 from package version 2610-1~n
 }
 
 patch_hash() { cat "$ROOT"/fex/patches/*.patch | sha256sum | cut -c1-8; }
+# The patched FEX talks to the system FEXServer and loads the system thunks, so it must match the installed package;
+# dpkg stamps file times from the package, so size + mtime changes with every package build.
+fingerprint() { stat -Lc '%s %Y' /usr/bin/FEXServer 2>/dev/null; }
 
 install_build() {
-  local ver name src out
+  local ver name src out tmp
   ver=$(system_version) || die "fex-emu-$VARIANT is not installed (system/fex-system.sh install)"
   name=$ver-gs-$(patch_hash); src=$DIR/src/FEX-$ver; out=$DIR/$name/bin
   if [ -x "$out/FEX" ]; then
@@ -39,7 +42,8 @@ install_build() {
     as_root sh -c "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq clang lld llvm ninja-build cmake git python3 >/dev/null" ||
       die "could not install the build tools"
     rm -rf "$src"; mkdir -p "$DIR/src"
-    git clone -q --depth 1 --branch "FEX-$ver" https://github.com/FEX-Emu/FEX.git "$src" 2>/dev/null || die "no FEX-$ver tag to clone"
+    git -c advice.detachedHead=false clone -q --depth 1 --branch "FEX-$ver" https://github.com/FEX-Emu/FEX.git "$src" ||
+      die "could not clone FEX-$ver from github.com/FEX-Emu/FEX (git error above)"
     for m in $SUBMODULES; do git -C "$src" submodule update -q --init --depth 1 "$m" || die "submodule $m"; done
     for p in "$ROOT"/fex/patches/*.patch; do
       git -C "$src" apply --check "$p" 2>/dev/null || die "$(basename "$p") does not apply to FEX-$ver; update fex/patches"
@@ -48,18 +52,21 @@ install_build() {
     mkdir -p "$src/build"
     (cd "$src/build" && cmake -G Ninja .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
       -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DUSE_LINKER=lld -DENABLE_LTO=OFF -DBUILD_TESTING=OFF \
-      -DBUILD_FEXCONFIG=OFF -DENABLE_CCACHE=OFF -DCMAKE_CXX_SCAN_FOR_MODULES=OFF >"$src/cmake.log" 2>&1 &&
-      ninja -j"$(nproc)" FEX FEXServer >"$src/build.log" 2>&1) || die "build failed, see $src/build.log"
-    mkdir -p "$out" && cp "$src/build/Bin/FEX" "$src/build/Bin/FEXServer" "$out/"
-    echo "$ver" > "$DIR/$name/built-from"
+      -DBUILD_FEXCONFIG=OFF -DENABLE_CCACHE=OFF -DCMAKE_CXX_SCAN_FOR_MODULES=OFF >"$src/cmake.log" 2>&1) ||
+      die "cmake failed, see $src/cmake.log"
+    ninja -C "$src/build" -j"$(nproc)" FEX FEXServer >"$src/build.log" 2>&1 || die "build failed, see $src/build.log"
+    tmp=$DIR/$name.tmp; rm -rf "$tmp" "${DIR:?}/${name:?}"   # only reached without $out/FEX, so $DIR/$name is incomplete
+    { mkdir -p "$tmp/bin" && cp "$src/build/Bin/FEX" "$src/build/Bin/FEXServer" "$tmp/bin/" &&
+      echo "$ver" > "$tmp/built-from" && mv "$tmp" "$DIR/$name"; } || { rm -rf "$tmp"; die "could not copy the build to $DIR/$name"; }
   fi
   ln -sfn "$name" "$DIR/current"
+  fingerprint > "$DIR/$name/system-fex"   # tools/launch.sh and status compare it with the installed package
   # The profile attaches by path; bwrap inside Steam's container needs unprivileged user namespaces (Ubuntu 24.04
   # restricts them to binaries with a profile that allows it, like /etc/apparmor.d/FEX for the packaged FEX).
-  printf 'abi <abi/4.0>,\ninclude <tunables/global>\n# GameSpark patched FEX builds (system/fex-patched.sh)\nprofile gamespark-fex %s/*/bin/FEX flags=(unconfined) {\n  userns,\n}\n' \
-    "$DIR" > /tmp/gamespark-fex.profile
-  as_root sh -c "cp /tmp/gamespark-fex.profile $PROFILE && apparmor_parser -r $PROFILE" || die "could not load $PROFILE"
-  rm -f /tmp/gamespark-fex.profile
+  # The profile is written by the root shell itself, from arguments: nothing is staged in a shared directory.
+  # shellcheck disable=SC2016  # $1 and $2 are the root shell's arguments
+  as_root sh -c 'printf "abi <abi/4.0>,\ninclude <tunables/global>\n# GameSpark patched FEX builds (system/fex-patched.sh)\nprofile gamespark-fex %s/*/bin/FEX flags=(unconfined) {\n  userns,\n}\n" "$1" > "$2" && apparmor_parser -r "$2"' \
+    _ "$DIR" "$PROFILE" || die "could not load $PROFILE"
   echo "installed: $DIR/current -> $name"
 }
 
@@ -71,14 +78,17 @@ case ${1:-} in
       echo "Patched FEX: $(readlink "$DIR/current") (built from $(cat "$DIR/current/built-from" 2>/dev/null || echo '?'))"
       [ "$(cat "$DIR/current/built-from" 2>/dev/null)" = "$(system_version)" ] ||
         echo "  WARNING: built from a different FEX release than the system package; re-run: system/fex-patched.sh install"
+      [ "$(cat "$DIR/current/system-fex" 2>/dev/null)" = "$(fingerprint)" ] ||
+        echo "  WARNING: the system FEX package changed since this build was installed; re-run: system/fex-patched.sh install"
       [ "$(readlink "$DIR/current")" = "$(system_version)-gs-$(patch_hash)" ] || echo "  note: fex/patches changed since this build"
     else
       echo "Patched FEX: not installed"
     fi
     echo "AppArmor profile: $([ -f "$PROFILE" ] && echo installed || echo missing)" ;;
   uninstall)
-    as_root sh -c "[ -f $PROFILE ] && apparmor_parser -R $PROFILE; rm -f $PROFILE" 2>/dev/null
+    as_root sh -c "[ -f $PROFILE ] && apparmor_parser -R $PROFILE 2>/dev/null; rm -f $PROFILE" ||
+      echo "warning: could not remove $PROFILE (needs sudo or the docker group)" >&2
     rm -rf "$DIR"
-    echo "removed $DIR and $PROFILE" ;;
+    echo "removed $DIR"; [ -e "$PROFILE" ] || echo "removed $PROFILE" ;;
   *) echo "usage: $0 install|status|uninstall" >&2; exit 2 ;;
 esac
