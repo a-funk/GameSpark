@@ -27,6 +27,9 @@ else
   echo "FAIL launch.sh (output: $out)"; fail=1
 fi
 rm -rf "$t"
+for f in profiles/launch/*.env; do   # SparkHome shows it on the game's tile
+  grep -q '^# summary: .' "$f" || { echo "FAIL $f has no '# summary: ...' line"; fail=1; }
+done
 if command -v x86_64-w64-mingw32-gcc >/dev/null; then
   t=${TMPDIR:-/tmp}/gamespark-shim-test
   x86_64-w64-mingw32-gcc -Wall -Wextra -Werror -shared -o "$t.dll" shim/shim.c shim/powrprof.def -lpsapi \

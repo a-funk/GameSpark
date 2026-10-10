@@ -8,6 +8,8 @@
 #                                 FEX_BINARY=gamespark to run the game under GameSpark's patched FEX build
 #                                 (system/fex-patched.sh; FEX_BINARY=/path/to/FEX for any other build). If that
 #                                 build is missing the game is not started: its FEX_* settings need it.
+#                                 Its "# summary: ..." line says in one line what the profile does, for front
+#                                 ends (SparkHome shows it on the game's tile).
 #   profiles/launch/<appid>.Engine.ini  an Unreal Engine game's Engine.ini, written into its Wine prefix before every
 #                                 launch (with UE_PROJECT=<folder under AppData/Local> in the .env)
 #   $SG_DATA/launch/run.env       settings for every game while a benchmark run is active (bench/run.sh writes and
