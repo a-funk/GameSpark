@@ -1,7 +1,7 @@
 """Edit Steam's per-game settings in its VDF files. Steam must be closed: it rewrites these files on exit.
 Prefer tools/steam-config.sh, which closes and restarts Steam around the edit.
 
-  steamcfg.py launch-options LOCALCONFIG APPID "OPTIONS"   userdata/<id>/config/localconfig.vdf; "" clears
+  steamcfg.py launch-options LOCALCONFIG APPID[,APPID...] "OPTIONS"   userdata/<id>/config/localconfig.vdf; "" clears
   steamcfg.py compat-tool    CONFIG      APPID TOOL        config/config.vdf; TOOL e.g. proton_experimental, "" clears
   steamcfg.py --selftest
 """
@@ -63,10 +63,12 @@ def edit(path, keys, fn):
     assert tokenize(open(path, encoding="utf-8").read()) == tokenize(text)
 
 
-def set_launch_options(path, appid, opts):
-    def fn(app):
-        app[:] = [kv for kv in app if kv[0] != "LaunchOptions"] + ([["LaunchOptions", opts.replace('"', '\\"')]] if opts else [])
-    edit(path, ["UserLocalConfigStore", "Software", "Valve", "Steam", "apps", appid], fn)
+def set_launch_options(path, appids, opts):
+    def fn(apps):                        # several games in one edit: one backup per file
+        for appid in appids.split(","):
+            app = child(apps, appid)
+            app[:] = [kv for kv in app if kv[0] != "LaunchOptions"] + ([["LaunchOptions", opts.replace('"', '\\"')]] if opts else [])
+    edit(path, ["UserLocalConfigStore", "Software", "Valve", "Steam", "apps"], fn)
 
 
 def set_compat_tool(path, appid, tool):
@@ -89,6 +91,9 @@ def selftest():
     assert '"LaunchOptions"\t\t"A=1 %command%"' in t and '"Playtime"\t\t"7"' in t, t
     set_launch_options(p, "42", "")
     assert "LaunchOptions" not in open(p).read()
+    set_launch_options(p, "42,43", "B=2 %command%")
+    t = open(p).read()
+    assert t.count('"LaunchOptions"\t\t"B=2 %command%"') == 2 and '"43"' in t and '"Playtime"\t\t"7"' in t, t
     c = os.path.join(d, "config.vdf")
     open(c, "w").write('"InstallConfigStore"\n{\n\t"Software"\n\t{\n\t\t"Valve"\n\t\t{\n\t\t\t"Steam"\n\t\t\t{\n\t\t\t\t"CompatToolMapping"\n\t\t\t\t{\n'
                        '\t\t\t\t\t"0"\n\t\t\t\t\t{\n\t\t\t\t\t\t"name"\t\t"proton_10"\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n')

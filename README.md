@@ -72,9 +72,10 @@ controller/pair.sh                          # optional: pair an Xbox or PS5 cont
 system/fex-patched.sh install               # needed for Denuvo games such as Galactic Racer: a patched FEX for the
                                             # games whose profiles/launch/<appid>.env sets FEX_BINARY=gamespark
 
-# Once per game: launch through GameSpark's wrapper, which applies profiles/launch/<appid>.env (launcher skips,
-# controller and DLSS fixes) and per-run settings, so they change without editing Steam's launch options again.
-tools/steam-config.sh launch-options 1091500 "$PWD/tools/launch.sh %command%"
+# Launch through GameSpark's wrapper, which applies profiles/launch/<appid>.env (launcher skips, controller and DLSS
+# fixes) and per-run settings, so they change without editing Steam's launch options again. This sets it for every
+# game with a profile, on every Steam account (run it again after adding a profile):
+tools/steam-config.sh launch-options profiled
 
 # Benchmark (Steam running, game installed):
 QUIET_LOCKS=/path/to/cron.lock SHOT_AT=85 bench/run.sh cyberpunk2077 my-label
