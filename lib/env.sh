@@ -33,7 +33,8 @@ fi
 : "${QUIET_LOCKS:=}"                                       # colon-separated flock files held during runs (pause cron jobs)
 
 uid=$(id -u)
-: "${DISPLAY:=:1}" "${XAUTHORITY:=/run/user/$uid/gdm/Xauthority}"
+x=$(ls /tmp/.X11-unix 2>/dev/null | sed -n 's/^X\([0-9]*\)$/\1/p' | head -1)   # GDM's display is :0 or :1 by boot
+: "${DISPLAY:=:${x:-0}}" "${XAUTHORITY:=/run/user/$uid/gdm/Xauthority}"
 : "${XDG_RUNTIME_DIR:=/run/user/$uid}" "${DBUS_SESSION_BUS_ADDRESS:=unix:path=/run/user/$uid/bus}"
 export DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
 

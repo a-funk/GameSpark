@@ -295,6 +295,195 @@ still go through evdev and would show the same problem in the FEX Steam (not tes
 converting `input_event` on reads (and on uinput writes) for 32-bit guests. When `controller/evdev32_check.py`
 starts exiting 0, the rule is no longer needed.
 
+## STAR WARS: Galactic Racer: what Denuvo needs from FEX
+
+The game (Unreal Engine 5, DirectX 12, released 2026-10-06, Denuvo Anti-Tamper with a 5-machine activation limit) runs
+on the Spark with GameSpark's patched FEX. On its first launch through Steam it reached the title screen at a steady
+60 fps (vsync). With stock FEX (2610 or the snap's 2603) it exits about 0.6 s after the game process starts, inside
+Denuvo's startup checks, before Unreal writes a log.
+
+**How it was found.** A standalone repro runs the game exe under Wine and FEX without Steam (so Denuvo cannot
+activate) and logs exceptions. Under stock FEX, Denuvo's vectored handler sees about 2,800 deliberate faults and
+then a read through a pointer exactly 2^32 below a valid address (`0xFFFFFFFF2F12FD84` at `0x1535129EB`), and the
+process dies of a stack overflow. Box64, an independent x86 emulator, failed the same way, which ruled out a
+FEX-specific instruction bug. With two additions Box64 passed, and both additions are FEX features this game needs:
+
+1. **Direct Windows syscalls.** The x86 reference log (Proton issue #10228) shows about 910 raw `syscall`
+   instructions from the game's own code in its first 0.6 s. Proton's Wine traps them with a seccomp filter.
+   - FEX 2610 emulates seccomp only with `NeedsSeccomp=1`, which is off by default, so Wine's filter install fails
+     with `EINVAL`. The syscalls then run as Linux syscalls: in `tools/syscall_check.c` a copied `NtClose` stub
+     (number `0xf`) runs Linux `rt_sigreturn` and crashes.
+   - The Linux return values are 64-bit `-errno`, where Windows returns 32-bit NTSTATUS. That is the likely source
+     of the upper half full of ones.
+   - With `NeedsSeccomp=1` the call is trapped, but FEX also executed it, and its SIGSYS reported RIP at the
+     `syscall` instruction instead of after it. Wine returns to `RIP + 0xb`, so it landed 2 bytes early and looped.
+   - Fix: `fex/patches/0001`. Like Linux, it skips the syscall, keeps RAX = syscall number and raises SIGSYS on the
+     way back to the guest, with the RIP after the instruction. The signal is queued as deferred and delivered by
+     the dispatcher's syscall stub, after FEX's syscall handler has returned (see the next paragraph for why).
+2. **Hardware execute breakpoints.**
+   - What Denuvo does: on every thread it arms DR3 with `NtSetContextThread` (`dr3=0x14d2b84d0, dr7=0x40`) and
+     expects `EXCEPTION_SINGLE_STEP` when that address runs.
+   - What FEX did: wineserver sets debug registers with `ptrace(PTRACE_POKEUSER)`, FEX answered `EPERM`
+     (`set_thread_context() = ACCESS_DENIED`), and nothing fired.
+   - The fix, `fex/patches/0002`, carries the debug registers from wineserver to the game thread through a small
+     per-thread shared-memory mailbox. It makes every armed address the start of its own compiled block, where the
+     JIT checks the current thread's DR0-3 and raises a guest `#DB` (trap 1, `TRAP_HWBKPT`, DR6 set).
+     `tools/hwbp_check.c` passes with it: SetThreadContext succeeds, exactly one single-step at the right address,
+     `Dr6=0xffff0ff1`.
+
+**Verification.**
+- **Standalone:** 2,846 exceptions and the stack overflow became 49 exceptions (2 of them the expected
+  single-steps), and the game loaded `steam_api64.dll` and asked Steam to relaunch it.
+- **Through Steam:** 165 single-steps (one per thread), about 117,000 direct syscalls handled by Wine, then
+  VKD3D-Proton, DXVK, NVAPI, DLSS and EOS loaded, and the title screen showed.
+
+**A crash a few minutes in, from the first version of patch 0001.** That version delivered the SIGSYS from inside
+FEX's syscall handler. Wine's SIGSYS handler always redirects the thread into its syscall dispatcher, and when a guest
+handler changes RIP, FEX resumes at the top of its dispatcher on the host stack it was interrupted on (FEX's own
+comment calls this "only safe inside the JIT"). The handler's frames and FEX's saved context, about 750 bytes, stayed
+on the stack for every trapped syscall.
+- In the game: both real runs closed after 4.5 and 10 minutes, with no crash report and no Windows exception. In
+  both, the last thing logged was one Denuvo check thread (one of ~300, each about 1,000 trapped syscalls) that scans
+  memory with `NtQueryVirtualMemory` and had reached about 11,400 trapped syscalls. Threads that survived made at
+  most about 9,100.
+- In isolation: a thread making direct syscalls stopped between 11,000 and 11,500 calls, with its 8 MB FEX host
+  stack (`[anon:FEXMem_Misc]`) fully resident.
+- With the deferred delivery, 200,000 trapped syscalls on one thread complete; `tools/syscall_check.c` now repeats
+  30,000 on a new thread.
+
+**Ruled out along the way** (each still failed the same way): reporting non-canonical faults as #GP like x86 does;
+FEX's `SMCChecks=full`, `HideHypervisorBit` and other codegen options; FEX 2603 and FEX `main` (identical to 2610).
+ARM64 Top Byte Ignore (a tagged non-canonical pointer reads without faulting) and FEX's segment selectors (CS=0x30)
+also differ from x86, but Box64 passed despite them.
+
+**Other FEX bugs found while testing**, not needed for this game:
+- `cmpxchg r32, r32` with a register destination does not zero-extend it on the not-equal path;
+- 32-bit-address `loop` leaves the upper half of RCX (a 2610 regression);
+- 32-bit-address `movsb`/`stosb` crash;
+- a faulting split-lock atomic kills the FEX process with SIGBUS.
+
+**How it is set up.** `system/fex-patched.sh install` builds the system FEX's release with `fex/patches` and installs
+it for the user next to the packaged FEX (never over it). It also adds an AppArmor rule so Steam's container can use
+user namespaces under it. `profiles/launch/4078430.env` sets `FEX_BINARY=gamespark`, `FEX_NEEDSSECCOMP=1` and
+`FEX_GSHWBP=1`. `tools/launch.sh` then starts only this game's process tree under the patched FEX; Steam stays on the
+packaged one. FEX does not accept AI-written code (its `CONTRIBUTING.md`), so the patches stay local, and the findings
+go upstream as a written report.
+
+**Pitfalls met on the way.**
+- Steam's launch options are stored per account: after the TV's Steam was switched to another household account,
+  the game launched without GameSpark's wrapper.
+- Steam re-asked for the EULA after the 2026-10-08 hotfix.
+- Until "Don't ask again" is chosen, Steam's launch-option chooser (Play / Reinstall Epic Online Services) silently
+  swallows launches sent through the Steam pipe.
+- A standalone run that gets past Denuvo calls `steam.exe steam://run/4078430`; with a reachable Steam that would be
+  a real launch and a Denuvo activation.
+
+## STAR WARS: Galactic Racer: flash frames, hitches and audio
+
+Playable since 2026-10-10 with no flicker: medium preset, ray tracing off, DLSS Super Resolution Performance and
+Reflex on (in-game), plus three things from `profiles/launch/4078430.*`: Nanite off, the game on the 10 fast cores
+from launch, and more audio buffering. Racing at 1080p (one race each, different tracks):
+
+| Setup | Avg fps | Median frame | 99th pct frame | Flicker |
+|---|---:|---:|---:|---|
+| Medium, Nanite on, pinned to the X925 cores after launch | 75.6 | 12.7 ms | 24.7 ms | reduced; hitch about once a second |
+| + `PROTON_CPU_TOPOLOGY` (fast cores from launch) | 102.5 | 9.5 ms | 15.1 ms | flash frames throughout |
+| + `r.Nanite=0` (the profile) | 83.4 | 10.9 ms | 22.6 ms | none |
+
+**What the flicker is.** Recorded with `x11grab` at 30 fps, it is single "flash frames": one frame that disagrees
+with both neighbours while they agree with each other. In a flash frame, independently:
+- the ground is missing (a dark plane and patches of sky where the terrain should be, while rocks, debris and buildings
+  are drawn);
+- meshes that are hidden from the player camera appear: the podracer's engines, of which normally only the energy
+  binder and their shadows show; in another frame a vehicle body in the foreground vanished instead;
+- there is no motion blur at all, where the frames 33 ms before and after are heavily blurred.
+
+In a desert race about half of the moving frames had more than 1% of the lower half's 8x8-pixel tiles flash; at peaks
+90%. That share overstates the bug: on the Nanite-off recording the same measure still flags 21% of racing frames
+above 1%, from things the game does on purpose (camera cuts at takedowns and at the finish, a golden hologram of the
+engines), but only 0.25% above 10% and none above 40%. Compare runs at 10% or 20%. Earlier, two other flickers had
+been fixed in Engine.ini: background objects in the menu (hardware occlusion queries and Nanite's HZB occlusion:
+`r.AllowOcclusionQueries=0`, `r.Nanite.Culling.HZB=0`) and the landscape in a frozen scene
+(`r.Nanite.Streaming.ReservedResources=0`: Nanite's streaming pool as a plain buffer instead of a sparse one). The
+flash frames in motion survived everything else:
+
+| Change | Would have pointed at | Flash frames |
+|---|---|---|
+| `VKD3D_CONFIG=single_queue` | async compute racing graphics | still there |
+| `VKD3D_DISABLE_EXTENSIONS=VK_EXT_mesh_shader` | Nanite's mesh-shader raster path | still there |
+| `r.Nanite.PersistentThreadsCulling=0`, `r.Nanite.Streaming.Async=0`, `r.PSOPrecache.ProxyCreationWhenPSOReady=0`, `r.SkipDrawOnPSOPrecaching=0` | Nanite culling, streaming, shader precaching | still there |
+| `r.Nanite.Tessellation=0` | displaced terrain | still there (the floor too) |
+| `r.Nanite.Streaming.StreamingPoolSize=1536` (default 512; 2048 stops the game: "must be smaller than the largest allocation supported by the graphics hardware (2048MB)") | a streaming pool too small for the track | still there |
+| `r.FinishCurrentFrame=1` (60 fps) | the CPU overwriting data the GPU is still reading | still there |
+| `VKD3D_CONFIG=force_host_cached` | the GPU reading stale CPU-written upload memory (memory type 2, uncached, replaced by type 3, cached) | still there |
+| `FEX_VECTORTSOENABLED=1 FEX_MEMCPYSETTSOENABLED=1 FEX_HALFBARRIERTSOENABLED=0` (58-63 fps) | x86 memory ordering lost in translation | still there |
+| `r.Nanite=0` | Nanite | **gone** |
+
+So it takes Nanite to trigger it, and it does not need the CPU to run ahead of the GPU. x86 memory ordering is unlikely
+but not excluded: `FEX_HALFBARRIERTSOENABLED=0` is weaker than the default for unaligned accesses, and FEX never orders
+stack accesses. `r.GPUScene.InstanceUploadViaCreate=0`, also tried, tested nothing: unlike every other setting here, it
+is not in the game's binary. The game writes no Unreal log, so a setting without a visible effect is not confirmed to
+have applied. Whether it breaks in Unreal, in vkd3d-proton or in the driver is not known yet. Nanite off was first
+tried at the original high settings with ray tracing and ran too slowly; at medium with the fixes below it averages
+83 fps.
+
+A research pass (four lanes: vkd3d-proton, NVIDIA driver, FEX, Unreal 5.7 source, then a skeptic ranking them) found
+no report of this exact symptom. The closest is Talos Principle 2 (Unreal 5): random single glitchy frames that went
+away with a setting that turns Nanite off were an AMD driver bug in Mesa
+([vkd3d-proton #1732](https://github.com/HansKristian-Work/vkd3d-proton/issues/1732)). The game shows the engines and
+cuts the camera on purpose, so the signature to count is a single frame that reverts, keeps the camera pose and the
+HUD, and loses the terrain or shows fully shaded engines without motion blur. Next tests, likeliest cause first:
+- **vkd3d-proton's new barrier code.** This Proton Experimental (2026-10-01) carries vkd3d-proton master 44cf7c20, 439
+  commits after v3.0.1. Since August those commits changed COPY barriers, ClearUAV, fence waits on NVIDIA and Reflex's
+  queue handling, and no setting turns the first three off. The barrier change (238f157e) defers the legacy
+  COPY_DEST-to-shader-resource transitions that Unreal makes for uploaded buffers, and it brought an open NVIDIA
+  regression with intermittent flashes ([#3355](https://github.com/HansKristian-Work/vkd3d-proton/issues/3355): that
+  early return skips a pending device-generated-commands flush). Cheapest test:
+  `r.D3D12.PreferredBarrierImplementation=2` in Engine.ini, so Unreal uses enhanced barriers, which vkd3d-proton
+  translates without deferring. Then Proton 11.0 as the game's compatibility tool (its vkd3d-proton, 212991fc, has none of these changes), the v3.0.1 DLLs, or a
+  44cf7c20 build with the fix proposed in #3355. Turning off `VK_EXT_device_generated_commands` is not a clean test:
+  vkd3d then drops the state changes such indirect draws carry, which breaks rendering by itself.
+- **NVIDIA's driver.** DGX Spark supports only the R580 branch, and the fixes that could matter are only in Vulkan
+  betas: a "race condition between Vulkan graphics and DLSS" and "D32 formatted images [...] corrupted after being
+  written by a transfer or compute stage" (595.44.15), a "skipped barrier after host transfer" (595.44.09). Test TSR
+  instead of DLSS first; a driver change last.
+- **Unreal's async compute and transient memory.** One run with `-DisableAsyncCompute` on the command line and
+  `r.RDG.TransientAllocator=0`, `r.RDG.TransientExtractedResources=0` in Engine.ini; split them up if it helps.
+- **Where in Nanite.** `r.Nanite.FilterPrimitives=0` (the per-view filter for hidden primitives and the landscape),
+  then `r.Nanite.ProgrammableRaster=0` (masked materials); `r.SceneCapture.AllowRenderInMainRenderer=0` in case a
+  scene capture, which by default renders without motion blur or an owner, replaces the main view.
+- Cheap, low odds: Reflex off in-game; `VKD3D_DISABLE_EXTENSIONS=VK_EXT_descriptor_buffer`.
+
+Ruled out on paper: the six wave64 pipelines that fail at startup ("Required WaveSize range [64, 64], but supported
+range is [32, 32]") are Lumen, TSR, Substrate and hair-strand permutations that Unreal selects only when the GPU
+reports 64-wide waves; and the dxil-spirv fix for "rapid flickering and disappearing surfaces" on NVIDIA
+([#312](https://github.com/HansKristian-Work/dxil-spirv/issues/312)) applies only without `VK_NV_raw_access_chains`,
+which this driver has.
+
+**Hitches: pinning that did not hold.** At medium with Nanite on the frame log showed about 1.3 spikes a second
+(median 26.6 ms against 12.3 ms frames), at irregular intervals, more on some sections of a track than others.
+- Polling the GPU at 10 Hz with `nvidia-smi` during a race added no spikes, so GPU monitoring was not the cause.
+- A 1 ms per-thread sampler (`/proc/<pid>/task/*/schedstat`) lined up with the frame log showed no single thread
+  working longer in slow frames; the threads mostly waited. (MangoHud's `elapsed` clock starts 0.1-0.2 s before
+  its CSV file exists; the offset was found where the submission threads' per-frame activity is sharpest.)
+- The game used 7.4 cores while the 10 cores it was pinned to were 37% busy. `taskset -a` after launch only moves
+  threads that exist: 172 of 181 threads were allowed on all 20 cores again, and threads named GameThread were last
+  seen on A725 cores.
+- `PROTON_CPU_TOPOLOGY=10:5,6,7,8,9,15,16,17,18,19` from launch keeps every thread on the X925 cores. The game then
+  starts 11 worker threads instead of 24, and the 99th percentile frame fell from 24.7 to 15.1 ms. Proton sets this
+  itself on arm64, but it checks `platform.machine()`, which says x86_64 under FEX. Per game: Cyberpunk lost 8% this
+  way (E9 above).
+
+**Audio dropouts.** `pw-top` showed the HDMI output running 128-sample (2.7 ms) cycles because Wine asked for very
+little buffering, and each of the game's two streams underran about 15 times a minute. Raising PipeWire's minimum
+cycle (`pw-metadata -n settings 0 clock.min-quantum 1024`) stopped it at once. Per game instead:
+`PULSE_LATENCY_MSEC=60` gave 512-sample cycles and about 1.4 underruns a minute; `90` gives 1024-sample cycles and 5
+underruns in 8 minutes.
+
+**Engine.ini.** The game deletes `Saved/Config/Windows/Engine.ini` after reading it at startup, so `tools/launch.sh`
+copies `profiles/launch/4078430.Engine.ini` into the prefix before every launch (`UE_PROJECT` names the folder).
+
+
 ## The scheduler is a per-game choice
 
 | Game | Default scheduler | `scx_bpfland -m performance` | Effect |
