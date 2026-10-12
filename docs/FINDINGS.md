@@ -390,6 +390,30 @@ from launch, and more audio buffering. Racing at 1080p (one race each, different
 | + `PROTON_CPU_TOPOLOGY` (fast cores from launch) | 102.5 | 9.5 ms | 15.1 ms | flash frames throughout |
 | + `r.Nanite=0` (the profile) | 83.4 | 10.9 ms | 22.6 ms | none |
 
+**Nanite off crashes Jakku's roguelike maps (2026-10-11).** With the profile's Engine.ini (`r.Nanite=0`,
+`r.AllowOcclusionQueries=0`), every load of `L_Mastiff_LOOP_A`, a Jakku map in the roguelike mode, crashed about 1 s
+after the map loaded: 4 of 4. `r.Nanite=0` alone is enough: without the occlusion-query line, `L_Mastiff_P2P_A` crashed
+the same way.
+- **The crash:** an access violation reading address 0x8 on "RenderThread 0" at `SWGR-Win64-Shipping.exe+0x827114`.
+  The game's sentry-native minidumps recorded it; Unreal's own crash reporter wrote nothing.
+- **The instruction:** `mov ebp, [r12+8]`, with r12 loaded from `[[this+0x258]+0x48]`, a null two pointers deep. It
+  sits in the exe's main code section: Denuvo renamed that `.rsrc`, and its own VM is the 298 MB writable `.debug`.
+- **Without the Engine.ini** (Nanite on), the same load passed and the run went on, but the flash frames came back.
+- **Ruled out:** frame generation was still on in every run, because the in-game switch had not been saved, and
+  vkd3d-proton logged no error before the crash (`PROTON_LOG=1`). The game files verified clean.
+- **Why**, from the SparkHome session's reading of the exe:
+  - **The crashing function** is Unreal's `FStaticMeshSceneProxy::CreateDynamicRayTracingGeometries`. It reads the
+    mesh's render data (`+0x258`), then that data's ray-tracing proxy (`+0x48`), which is null. The call path is
+    `CreateRenderThreadResources` from `FScene::BatchAddPrimitives`, the same in all four dumps.
+  - **Why Nanite off:** with Nanite off, spline meshes get the non-Nanite `FSplineMeshSceneProxy`. It always asks for
+    dynamic ray-tracing geometry, where the base proxy asks only when a ray-tracing proxy exists. Some spline meshes on
+    the Mastiff maps have none. With Nanite on, as on Windows, they get `FNaniteSplineMeshSceneProxy` instead.
+  - **Why ray tracing runs at all:** it is off in the game's menu, but vkd3d-proton reports DXR, and the game turns
+    ray tracing on from level data.
+- **Fix:** `VKD3D_CONFIG=nodxr` in `profiles/launch/4078430.env` hides DXR, so ray tracing stays off. Confirmed on
+  2026-10-11 with Nanite still off: the Mastiff maps loaded, and there were no flash frames. Its effect on frame rate is
+  not measured yet.
+
 **What the flicker is.** Recorded with `x11grab` at 30 fps, it is single "flash frames": one frame that disagrees
 with both neighbours while they agree with each other. In a flash frame, independently:
 - the ground is missing (a dark plane and patches of sky where the terrain should be, while rocks, debris and buildings
@@ -438,11 +462,13 @@ HUD, and loses the terrain or shows fully shaded engines without motion blur. Ne
   queue handling, and no setting turns the first three off. The barrier change (238f157e) defers the legacy
   COPY_DEST-to-shader-resource transitions that Unreal makes for uploaded buffers, and it brought an open NVIDIA
   regression with intermittent flashes ([#3355](https://github.com/HansKristian-Work/vkd3d-proton/issues/3355): that
-  early return skips a pending device-generated-commands flush). Cheapest test:
-  `r.D3D12.PreferredBarrierImplementation=2` in Engine.ini, so Unreal uses enhanced barriers, which vkd3d-proton
-  translates without deferring. Then Proton 11.0 as the game's compatibility tool (its vkd3d-proton, 212991fc, has
-  none of these changes), the v3.0.1 DLLs, or a 44cf7c20 build with the fix proposed in #3355. Turning off `VK_EXT_device_generated_commands` is not a clean test:
-  vkd3d then drops the state changes such indirect draws carry, which breaks rendering by itself.
+  early return skips a pending device-generated-commands flush). The cheapest test,
+  `r.D3D12.PreferredBarrierImplementation=2` in Engine.ini (Unreal's enhanced barriers, which vkd3d-proton translates
+  without deferring), hung the GPU on 2026-10-11 with Nanite on: the game stopped at "preloading the menu" and the
+  driver logged `Xid 109 ... CTX SWITCH TIMEOUT` on the game thread's channel. Next: Proton 11.0 as the game's
+  compatibility tool (its vkd3d-proton, 212991fc, has none of these changes), the v3.0.1 DLLs, or a 44cf7c20 build
+  with the fix proposed in #3355. Turning off `VK_EXT_device_generated_commands` is not a clean test: vkd3d then drops
+  the state changes such indirect draws carry, which breaks rendering by itself.
 - **NVIDIA's driver.** DGX Spark supports only the R580 branch, and the fixes that could matter are only in Vulkan
   betas: a "race condition between Vulkan graphics and DLSS" and "D32 formatted images [...] corrupted after being
   written by a transfer or compute stage" (595.44.15), a "skipped barrier after host transfer" (595.44.09). Test TSR
