@@ -3,7 +3,8 @@
 FEX labels translated code by guest library when FEX_LIBRARYJITNAMING=1 (perf-<pid>.map). perf does not apply
 those maps to FEX's named JIT region ([anon:FEXMemJIT]), so this script resolves sample addresses itself.
 
-Usage:     python3 -I analyze.py PERF_SCRIPT.txt [MAP_DIR] [GAME_COMM_REGEX]
+Usage:     python3 -I analyze.py PERF_SCRIPT.txt [MAP_DIR] [GAME_COMM_REGEX | pid:PID[,PID...]]
+           (pid: counts every thread of those processes, e.g. the game and its wineserver)
            (PERF_SCRIPT.txt from: perf script -F comm,pid,tid,ip,sym,dso)
 Self-check: python3 -I analyze.py --selftest
 """
@@ -17,7 +18,9 @@ import sys
 
 LAYERS = [  # (layer, regex on resolved symbol or dso); first match wins
     ("kernel", r"\[kernel\.kallsyms\]"),
-    ("FEX runtime (JIT compiler, dispatcher, syscalls)", r"/usr/bin/FEX\b|FEXInterpreter|libFEXCore|Dispatch_|FEXJIT"),
+    ("FEX runtime (JIT compiler, dispatcher, syscalls)", r"/bin/FEX\b|FEXInterpreter|libFEXCore|Dispatch_|FEXJIT"),
+    # Under FEX's Vulkan thunking (system FEX, the patched FEX) the driver is the host's arm64 build: not emulated.
+    ("NVIDIA driver (native arm64, thunked)", r"aarch64-linux-gnu/lib(nvidia-|GLX_nvidia|EGL_nvidia)"),
     ("NVIDIA x86 driver (emulated)", r"libnvidia-|libGLX_nvidia|libEGL_nvidia"),
     ("Vulkan loader (x86)", r"libvulkan\.so"),
     ("VKD3D-Proton (DX12->Vulkan)", r"d3d12(core)?\.dll|vkd3d"),
@@ -72,16 +75,21 @@ def parse(lines, lookup=None):
         comm, pid, tid, ip, sym, dso = m.group(1).strip(), int(m.group(2)), int(m.group(3)), int(m.group(4), 16), m.group(5), m.group(6)
         if lookup and ("FEXMemJIT" in dso or "unknown" in sym):
             sym = lookup(pid, ip) or sym
-        yield comm, tid, sym, dso
+        yield comm, tid, sym, dso, pid
 
 
 def summarize(rows, game_comm=r"redDispatcher|GameThread|RenderThread|Cyberpunk|wine|vkd3d|dxvk|Main|\.exe"):
-    game = re.compile(game_comm, re.I)
+    if game_comm.startswith("pid:"):
+        pids = {int(p) for p in game_comm[4:].split(",") if p}
+        in_game = lambda comm, pid: pid in pids  # noqa: E731
+    else:
+        game = re.compile(game_comm, re.I)
+        in_game = lambda comm, pid: bool(game.search(comm))  # noqa: E731
     by_layer, by_thread, by_lib = collections.Counter(), collections.Counter(), collections.Counter()
     total = game_total = 0
-    for comm, _tid, sym, dso in rows:
+    for comm, _tid, sym, dso, *pid in rows:
         total += 1
-        if not game.search(comm):
+        if not in_game(comm, pid[0] if pid else 0):
             continue
         game_total += 1
         layer = layer_of(sym, dso)
@@ -114,6 +122,11 @@ def selftest():
     assert look(77, 0x1050).endswith("d3d12core.dll") and look(77, 0x2005).endswith(".exe") and look(77, 0x1500) is None
     line = "  redDispatcher3  77/80  2005 [unknown] ([anon:FEXMemJIT])"
     assert list(parse([line], look))[0][2].endswith("Cyberpunk2077.exe")
+    # a pid filter counts every thread of the listed processes, whatever their names
+    assert layer_of("x", "/usr/lib/aarch64-linux-gnu/libnvidia-glcore.so.580.173.02").startswith("NVIDIA driver (native")
+    rows = [("Foreground Work", 5, "x.exe", "[anon:FEXMemJIT]", 77), ("wineserver", 6, "y", "[anon:FEXMemJIT]", 78),
+            ("Xorg", 7, "z", "/usr/lib/xorg/Xorg", 79)]
+    assert summarize(rows, "pid:77,78")["game_samples"] == 2
     print("ok")
 
 

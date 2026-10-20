@@ -31,7 +31,7 @@ fi
 rc=0
 for c in "${CFGS[@]}"; do python3 -I "$ROOT/tools/steamcfg.py" "$WHAT" "$c" "$APP" "$VAL" || rc=1; done
 if pgrep -f "[-]-class=SparkHome" >/dev/null; then
-  setsid -f $STEAM_START -silent >/dev/null 2>&1 < /dev/null
+  steam_start -silent
 else
   "$ROOT/tools/steam-console.sh"
 fi

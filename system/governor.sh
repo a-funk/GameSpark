@@ -19,7 +19,7 @@ scx_running() { docker ps -q --filter "name=^$NAME$" | grep -q .; }
 apply() {   # $1 = bpfland|default
   if [ "$1" = bpfland ] && ! scx_running; then
     docker rm -f "$NAME" >/dev/null 2>&1
-    docker run -d --name "$NAME" --privileged --pid=host alpine nsenter -t 1 -m -u -i -n -p -- scx_bpfland -m performance >/dev/null
+    docker run -d --name "$NAME" --privileged --pid=host --network host alpine nsenter -t 1 -m -u -i -n -p -- scx_bpfland -m performance >/dev/null
   elif [ "$1" = default ] && scx_running; then
     docker rm -f "$NAME" >/dev/null
   fi

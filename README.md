@@ -31,9 +31,18 @@ polls and Wine makes expensive ([details](docs/FINDINGS.md#the-witcher-3-a-10-hz
 
 STAR WARS: Galactic Racer (Denuvo): stock FEX stops it 0.6 s in; **with `system/fex-patched.sh` it runs**. Denuvo
 needs two things FEX 2610 lacks: Proton must catch the game's direct Windows syscalls, and x86 hardware breakpoints
-must fire ([details](docs/FINDINGS.md#star-wars-galactic-racer-what-denuvo-needs-from-fex)). Racing at medium with
-DLSS Performance: **83 fps, no flicker** with its launch profile (Nanite off, the game on the fast cores from launch,
-more audio buffering; [details](docs/FINDINGS.md#star-wars-galactic-racer-flash-frames-hitches-and-audio)).
+must fire ([details](docs/FINDINGS.md#star-wars-galactic-racer-what-denuvo-needs-from-fex)). Racing at mostly High,
+2560x1440 with DLSS Performance, its launch profile of 2026-10-14 (Nanite off, ray tracing hidden so the campaign
+cannot crash, the game's baked lighting, a 1 GiB FEX code buffer, the fast cores from launch) runs the first campaign
+race at **71-76 fps with no flicker**
+([details](docs/FINDINGS.md#star-wars-galactic-racer-the-campaign-crash-and-fex-throwing-away-its-translations-2026-10-14)).
+On the player's own Arcade races, driven again by the game's AI, Nanite on is **8-85% faster** (most on podracer
+tracks) and fixes Crait's black salt flats, but on NVIDIA's R580 driver it leaves the player's own vehicle out of about
+a quarter of the frames (the flicker)
+([details](docs/FINDINGS.md#star-wars-galactic-racer-a-bench-held-at-18-fps-and-the-nanite-flicker-read-backwards-2026-10-19)).
+On kernel 7.0 with NVIDIA 615.71.09 the vehicle is drawn, so the profile has Nanite on since 2026-10-19: **78-91 fps on
+every race measured** at Medium with DLSS Performance
+([details](docs/FINDINGS.md#star-wars-galactic-racer-nanite-on-after-a-driver-change-2026-10-19)).
 
 What we learned:
 
@@ -84,6 +93,12 @@ QUIET_LOCKS=/path/to/cron.lock SHOT_AT=85 bench/run.sh cyberpunk2077 my-label
 system/frametimes.sh install
 FRAMES=60 bench/run.sh dos2 my-label        # 60 s of frame times; the record gets true 1% lows
 
+# Galactic Racer on races a player drove: record them (DualSense on Bluetooth), then drive them again, with the
+# player's own input or with the game's AI at the wheel (repeatable within 2%):
+bench/gr-record.sh start                    # race Arcade events, then:
+bench/gr-record.sh stop                     # one race file per finished race in ~/.local/share/gamespark/gr-inputs/races
+GR_ROUTE=replay GR_RACE=crait-skim-speeder-champion GR_DRIVER=ai bench/run.sh galacticracer my-label
+
 # Win32 call cache for games whose profiles/launch/<appid>.env has a SHIM= line (builds with mingw-w64):
 system/shim.sh install 292030               # The Witcher 3
 
@@ -117,6 +132,7 @@ in `profiles/launch/`.
 | `system/` | Per-game scheduler governor, system FEX setup, the patched FEX build (`fex-patched.sh`), console mode, global scheduler installer |
 | `fex/patches/` | Local FEX patches (seccomp trap semantics, x86 hardware execute breakpoints) built by `system/fex-patched.sh` |
 | `tools/` | Steam pipe helpers, launch-option editor, keyboard/mouse and virtual gamepad input, screenshots, GPU probe, and checks of how FEX handles what Denuvo relies on (`faultprobe.c`, `syscall_check.c`, `hwbp_check.c`) |
+| `tools/padreplay.py`, `bench/gr-record.sh` | Record a DualSense's raw input during races and play it back through a virtual DualSense (uhid), anchored on the game's letterbox edges |
 | `controller/` | Bluetooth pairing for Xbox and PlayStation controllers, the BlueZ settings and Steam udev rule they need, and a check for FEX's 32-bit evdev bug |
 | `results/` | Run and profile records behind the numbers in this README |
 | `docs/` | Findings and methodology |

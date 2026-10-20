@@ -3,7 +3,10 @@ a controller-only interface while a controller is connected). Games under Proton
 
   python3 -I tools/gamepad.py start            create the pad and keep it (background); games need ~2 s to see it
   python3 -I tools/gamepad.py send SPEC...     A B X Y LB RB BACK START GUIDE LS RS, UP DOWN LEFT RIGHT (d-pad);
-                                               SPEC*N repeats, SPEC~S holds S seconds, "sleep:S" pauses
+                                               SPEC*N repeats, SPEC~S holds S seconds, "sleep:S" pauses;
+                                               AXIS=V sets a stick or trigger and leaves it there (LX LY RX RY
+                                               -1..1, LT RT 0..1), so "RT=1 LX=-0.3 sleep:2 LX=0" steers while
+                                               the throttle stays down
   python3 -I tools/gamepad.py stop
   python3 -I tools/gamepad.py --selftest
 
@@ -27,10 +30,25 @@ AXES = {0x00: (-32768, 32767), 0x01: (-32768, 32767), 0x03: (-32768, 32767), 0x0
 UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_ABSBIT, UI_DEV_CREATE, UI_DEV_DESTROY = 0x40045564, 0x40045565, 0x40045567, 0x5501, 0x5502
 
 
+STICKS = {"LX": 0x00, "LY": 0x01, "RX": 0x03, "RY": 0x04, "LT": 0x02, "RT": 0x05}
+
+
+def axis_value(name, v):
+    """'LX', -1.0 -> -32768 ... the axis's raw value; triggers take 0..1, sticks -1..1 (clamped)."""
+    lo, hi = AXES[STICKS[name]]
+    v = max(0.0 if lo == 0 else -1.0, min(1.0, v))
+    return round(v * hi) if v >= 0 else round(-v * lo)
+
+
 def parse(spec):
-    """'X~2' -> ('X', 1, 2.0); 'DOWN*3' -> ('DOWN', 3, 0.0); 'sleep:1' -> ('sleep', 1, 1.0)"""
+    """'X~2' -> ('X', 1, 2.0); 'DOWN*3' -> ('DOWN', 3, 0.0); 'sleep:1' -> ('sleep', 1, 1.0); 'RT=1' -> ('=RT', 1, 1.0)"""
     if spec.lower().startswith("sleep:"):
         return "sleep", 1, float(spec[6:])
+    if "=" in spec:
+        name, _, v = spec.partition("=")
+        if name.upper() not in STICKS:
+            raise ValueError(f"unknown axis {name}")
+        return "=" + name.upper(), 1, float(v)
     spec, _, hold = spec.partition("~")
     name, _, n = spec.partition("*")
     name = name.upper()
@@ -66,6 +84,9 @@ def act(fd, spec):
     for _ in range(n):
         if name == "sleep":
             time.sleep(hold)
+            continue
+        if name.startswith("="):
+            emit(fd, EV_ABS, STICKS[name[1:]], axis_value(name[1:], hold))
             continue
         typ, code, on = (EV_KEY, BUTTONS[name], 1) if name in BUTTONS else (EV_ABS, *DPAD[name])
         emit(fd, typ, code, on)
@@ -129,6 +150,14 @@ def main(argv):
         print("pad stopped")
     elif cmd == "--selftest":
         assert parse("X~2") == ("X", 1, 2.0) and parse("down*3") == ("DOWN", 3, 0.0) and parse("sleep:1") == ("sleep", 1, 1.0)
+        assert parse("rt=1") == ("=RT", 1, 1.0) and parse("LX=-0.5") == ("=LX", 1, -0.5)
+        assert axis_value("RT", 1) == 255 and axis_value("RT", -1) == 0 and axis_value("LX", -1) == -32768 \
+            and axis_value("LX", 0.5) == 16384 and axis_value("LY", 2) == 32767
+        try:
+            parse("Q=1")
+            raise AssertionError("accepted an unknown axis")
+        except ValueError:
+            pass
         try:
             parse("Z")
             raise AssertionError("accepted an unknown control")

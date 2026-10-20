@@ -24,7 +24,9 @@ menu_send() {
 menu_pause() { [ -n "${MENU_REPLAY:-}" ] || sleep "$1"; }
 
 # Start MangoHud's frame log now, for adapters that set FRAMES_DELAY=key (bench/run.sh binds this hotkey).
-FRAMES_KEY=Shift_R+F11
+# Not F11: Unreal Engine games toggle fullscreen on F11 even with Shift held (UGameViewportClient), so a Shift+F11 log
+# hotkey sent Galactic Racer into a window for the rest of the run.
+FRAMES_KEY=Shift_R+Scroll_Lock
 frames_start() { menu_send key "$FRAMES_KEY~0.3"; date +%s > "$MENU_DIR/bench_start"; }
 
 menu_wait() {  # NAME REGEX TRIES SECS

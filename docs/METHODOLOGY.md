@@ -2,7 +2,8 @@
 
 ## Benchmark runs (`bench/run.sh`)
 
-1. Refuses to start if another run or the game is active (`flock` on `/tmp/gamespark-bench.lock`).
+1. Refuses to start if another run or the game is active (`flock` on `/tmp/gamespark-bench.lock`), or if a
+   `run.env`/`run.Engine.ini` is left over in `$SG_DATA/launch` (it would apply to this run's launch too).
 2. Optionally holds the lock files in `QUIET_LOCKS` so cron jobs skip their cycle during the run.
 3. Starts `bench/telemetry.py` (1 Hz: GPU utilization, power, graphics clock, temperature from `nvidia-smi`;
    CPU utilization overall, on the fast cores and on the rest, from `/proc/stat`), and records other GPU compute
@@ -25,6 +26,16 @@
   active generator's column. Records carry both (`avg_fps` displayed, `rendered_fps` rendered).
 - **Telemetry means** cover only the benchmark window: from the result file's write time minus the benchmark
   length, to the write time.
+- **Resolution and display**: `resolution` is the game's output resolution as the settings saved with the run say
+  (before upscaling: Cyberpunk's summary, Tomb Raider's registry, RDR2's system.xml, The Witcher 3's dx12user.settings,
+  Unreal's GameUserSettings.ini, or an adapter's own `resolution` file), else the display's mode. `display` and
+  `refresh_hz` are the TV's mode during the run (`xrandr --current`, which does not re-probe the outputs: 3840x2160 at
+  59.94 Hz since 2026-10-13, and the TV has no 60.00 Hz 4K mode). `frames_over_refresh_pct` is the share of frames
+  slower than one refresh, the frames a VSync'd game would show late. Adapters write the display's resolution into a
+  game's settings (`lib/env.sh game_res`; `GAME_RES=WxH` overrides).
+- **Target** (`target`): 60 fps on that TV, judged on rendered frames measured uncapped (VSync off, frame cap lifted):
+  average >= 58, 1% low >= 48, at most 2 frames over 50 ms per minute (`TARGET_AVG`, `TARGET_LOW1`, `TARGET_HITCHES`
+  change them). `unknown` without per-frame data (Tomb Raider's results screen unless `FRAMES` is captured too).
 
 - **Frame captures** (`FRAMES=SECS`): MangoHud logs every frame's time for SECS seconds, starting `FRAMES_DELAY`
   seconds after the game's first frame, or when the adapter presses MangoHud's logging hotkey once its scene shows
@@ -32,6 +43,13 @@
   (telemetry comes from `bench/telemetry.py`). What the window shows is up to the adapter (a menu scene, a
   cutscene, a saved position); without menu driving it is the main menu. A saved position in a live quest (The
   Witcher 3) still varies between runs as NPCs move, so compare means of several runs.
+- **32-bit games** (PE32 executables, e.g. Metal Gear Rising) run an i386 Vulkan loader under FEX, which cannot load
+  the arm64 MangoHud (FEX has no 32-bit Vulkan thunk): `bench/run.sh` takes the layer from `$SG_DATA/vklayers32`
+  instead when the adapter's `GAME_EXE` is 32-bit, and stops if no i386 MangoHud is installed there. Until one is,
+  `WINE_FPS=1` records Wine's present rate (its fps debug channel, one average about every 1.5 s): an average and
+  the slowest window (`min_window_fps`), no frame times and so no 1% low.
+- **Launch path**: run settings (`FRAMES`, `RUN_ENV_EXTRA`) reach only games Steam starts through `tools/launch.sh`;
+  a frame capture of a game that did not log its launch there ends at once instead of waiting for a log.
 
 ## Repeatability
 
@@ -54,6 +72,8 @@ Steam downloads, shader pre-compilation and cron jobs all compete for the CPU; d
 - Profiles are per Steam setup (`profiles/snap/`, `profiles/fex/`; the running Steam is detected), because a
   knob's effect can differ between them (the scheduler: Cyberpunk +10% on the snap, 0% on FEX 2610). The
   Proton prefix is shared, so `bench/tune.py GAME --apply` re-applies adapter knobs after switching.
+- Profiles record the resolution they were tuned at. `--check` (and `bench/matrix.sh`) reports a profile tuned at
+  another resolution `STALE` without running it: profiles from before 2026-10-13 were tuned at 1920x1080.
 
 ## CPU profiles (`profile/profile.sh`)
 

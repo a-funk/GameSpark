@@ -3,13 +3,76 @@
 Each game adapter's results are parsed by a function in PARSERS returning frame times plus the game's own report.
 Common metrics (1% lows, fps over time, telemetry means for the benchmark window) are computed here.
 
+resolution is the game's output resolution as its saved settings say (before upscaling), else the display's mode;
+display is the mode the TV ran ("3840x2160", refresh_hz 59.94; bench/run.sh records it). target is the pass criterion
+for 60 fps on that TV: rendered average >= TARGET_AVG (58), rendered 1% low >= TARGET_LOW1 (48) and at most
+TARGET_HITCHES (2) frames over 50 ms per minute, measured uncapped (VSync off); without per-frame data it is "unknown".
+
 Usage:      python3 -I bench/ingest.py RUN_DIR GAME LABEL
 Self-check: python3 -I bench/ingest.py --selftest
 """
 import csv
 import json
 import os
+import re
 import sys
+
+
+def res_label(w, h):
+    """'1080p' for 16:9 (as older records say), else 'WIDTHxHEIGHT'."""
+    w, h = int(w), int(h)
+    return f"{h}p" if w * 9 == h * 16 else f"{w}x{h}"
+
+
+def display_info(run):
+    """The display mode bench/run.sh recorded ("3840x2160 59.94") -> ("3840x2160", 59.94), or (None, None)."""
+    try:
+        mode, rate = open(os.path.join(run, "display")).read().split()[:2]
+        return mode, float(rate)
+    except (OSError, ValueError):
+        return None, None
+
+
+def saved_resolution(run):
+    """(w, h) from what the run saved of the game's settings, or None: an adapter's own 'resolution' file
+    ("WIDTHxHEIGHT"), Unreal's GameUserSettings.ini, The Witcher 3's dx12user.settings, RDR2's system.xml."""
+    probes = [("resolution", r"^(\d+)x(\d+)", r""),
+              ("GameUserSettings.ini", r"^ResolutionSizeX=(\d+)", r"^ResolutionSizeY=(\d+)"),
+              ("dx12user.settings", r'^Resolution="(\d+)x(\d+)"', r""),
+              ("system.xml", r'<screenWidth value="(\d+)"', r'<screenHeight value="(\d+)"')]
+    for name, rw, rh in probes:
+        try:
+            text = open(os.path.join(run, name), errors="replace").read()
+        except OSError:
+            continue
+        mw = re.search(rw, text, re.M)
+        if mw and not rh:
+            return int(mw.group(1)), int(mw.group(2))
+        mh = re.search(rh, text, re.M) if mw else None
+        if mh:
+            return int(mw.group(1)), int(mh.group(1))
+    return None
+
+
+def target(doc, frame_ms, avg=58.0, low=48.0, hitches=2.0):
+    """Pass criterion for 60 fps on the 59.94 Hz TV, on rendered frames (frame generation doubles what is shown, not
+    what is rendered): average >= avg, 1% low >= low, at most `hitches` frames over 50 ms per minute."""
+    why = []
+    fps, low1_ = doc.get("rendered_fps"), doc.get("rendered_low1_fps")
+    if low1_ is None and not doc.get("frame_gen"):
+        low1_ = doc.get("low1_fps")   # e.g. RDR2's own percentiles
+    if fps is not None and fps < avg:
+        why.append(f"average {fps} < {avg:g}")
+    if low1_ is None:
+        why.append("no per-frame data for the 1% low (capture FRAMES)")
+    elif low1_ < low:
+        why.append(f"1% low {low1_} < {low:g}")
+    if frame_ms:
+        per_min = round(sum(x > 50 for x in frame_ms) / (sum(frame_ms) / 60000), 1)
+        if per_min > hitches:
+            why.append(f"{per_min:.1f} frames over 50 ms per minute > {hitches:g}")
+    verdict = "fail" if any(not w.startswith("no per-frame") for w in why) else ("unknown" if why else "pass")
+    return {"verdict": verdict, "avg_min": avg, "low1_min": low, "hitches_per_min_max": hitches, "why": why}
 
 
 def low1(frame_ms):
@@ -59,10 +122,9 @@ def parse_cyberpunk2077(run):
     q = cp2077_setting(run, "DLSS") or f"mode {S.get('DLSSQuality')}"
     upscale = f"DLSS {q}" if S.get("DLSSEnabled") else ("DLAA" if S.get("DLAAEnabled") else "native")
     fg = f"frame gen {int(S.get('DLSSMultiFrameGenFrameToGenerate') or 1) + 1}x" if S.get("DLSSFrameGenEnabled") else ""
-    w, h = S["renderWidth"], S["renderHeight"]
-    return {
+    return {   # renderWidth/Height are the output resolution (1920x1080 with DLSS Quality in the 1080p records)
         "game": "Cyberpunk 2077", "game_version": S.get("gameVersion"), "api": "DirectX 12 (VKD3D-Proton)",
-        "resolution": f"{h}p" if w * 9 == h * 16 else f"{w}x{h}",
+        "resolution": res_label(S["renderWidth"], S["renderHeight"]),
         "preset": " · ".join(x for x in [S.get("presetName"), upscale, fg] if x),
         "reported_avg_fps": S["averageFps"], "min_fps": S["minFps"], "max_fps": S["maxFps"], "seconds": S["time"],
         "rendered_ms": col(1), "displayed_ms": col(shown), "frame_gen": shown != 1,
@@ -72,8 +134,7 @@ def parse_cyberpunk2077(run):
 
 def parse_rottr(run):
     """OCR text of the results screen: per-scene 'Name: 144.21 FPS (min: 14.89, max: 213.24)' and 'Overall score'.
-    No per-frame data, so 1% lows and fps-over-time are not available."""
-    import re
+    No per-frame data, so 1% lows and fps-over-time are not available (unless the run also captured FRAMES)."""
     res = os.path.join(run, "result")
     text = open(os.path.join(res, "results.txt")).read()
     scenes = [{"scene": m[0].strip(), "avg_fps": float(m[1]), "min_fps": float(m[2]), "max_fps": float(m[3])}
@@ -83,8 +144,11 @@ def parse_rottr(run):
     end = int(open(os.path.join(res, "bench_end")).read())
     settings = open(os.path.join(res, "settings.txt")).read() if os.path.exists(os.path.join(res, "settings.txt")) else ""
     dx12 = '"EnableDX12"=dword:00000001' in settings
+    # The registry dump game_prepare saves: "FullscreenWidth"=dword:00000780 (hex)
+    wh = [re.findall(r'"Fullscreen%s"=dword:([0-9a-fA-F]+)' % k, settings) for k in ("Width", "Height")]
     return {"game": "Rise of the Tomb Raider", "api": "DirectX 12 (VKD3D-Proton)" if dx12 else "DirectX 11 (DXVK)",
-            "resolution": "1080p", "preset": ("DX12" if dx12 else "DX11") + " · default settings, VSync off",
+            "resolution": res_label(int(wh[0][-1], 16), int(wh[1][-1], 16)) if all(wh) else None,
+            "preset": ("DX12" if dx12 else "DX11") + " · default settings, VSync off",
             "reported_avg_fps": overall, "min_fps": min(x["min_fps"] for x in scenes), "max_fps": max(x["max_fps"] for x in scenes),
             "seconds": end - start, "end_ts": end, "scenes": scenes}
 
@@ -94,7 +158,6 @@ def parse_rdr2(run):
     percentiles in whole milliseconds. The headline is pass 4, the long final scene the game reports on screen; its
     1% low comes from the 99th-percentile frame time, so it is approximate (1 ms steps)."""
     import glob
-    import re
     res = os.path.join(run, "result")
     text = open(sorted(glob.glob(os.path.join(res, "Benchmark-*.txt")))[-1]).read()
     passes = [{"scene": f"Pass {m[0]}", "min_fps": float(m[1]), "max_fps": float(m[2]), "avg_fps": round(float(m[3]), 2)}
@@ -105,7 +168,8 @@ def parse_rdr2(run):
     api = re.search(r"API: (\w+)", text).group(1)
     end = int(open(os.path.join(res, "bench_end")).read())
     return {"game": "Red Dead Redemption 2", "api": "Vulkan" if api.lower() == "vulkan" else "DirectX 12 (VKD3D-Proton)",
-            "resolution": "1080p", "preset": f"{'Vulkan' if api.lower() == 'vulkan' else 'DX12'} · game's Safe defaults, VSync off",
+            "resolution": None,   # from the system.xml game_prepare saved (build)
+            "preset": f"{'Vulkan' if api.lower() == 'vulkan' else 'DX12'} · game's Safe defaults, VSync off",
             "reported_avg_fps": last["avg_fps"], "min_fps": last["min_fps"], "max_fps": last["max_fps"],
             "low1_fps": round(1000 / float(p99.group(1)), 1) if p99 else None,
             "seconds": round(frames.get(len(passes) - 1, 0) / last["avg_fps"], 1), "end_ts": end, "scenes": passes}
@@ -120,18 +184,66 @@ def mangohud_frames(run):
     rows = list(csv.reader(open(logs[-1])))
     head = next(i for i, r in enumerate(rows) if r[:2] == ["fps", "frametime"])
     col = rows[head].index("frametime")
-    return [float(r[col]) for r in rows[head + 1:] if len(r) > col and r[col]], os.path.getmtime(logs[-1])
+    data = [r for r in rows[head + 1:] if len(r) > col and r[col]]
+    # An adapter that starts the log early, where the screen is steady (a hotkey pressed during a stall is lost),
+    # writes frames_window: "OFFSET_S SECONDS" from the log's start. Keep the frames inside it (MangoHud's elapsed
+    # column counts nanoseconds from the start of logging).
+    win = os.path.join(run, "frames_window")
+    if os.path.exists(win) and "elapsed" in rows[head]:
+        off, secs = (float(x) for x in open(win).read().split()[:2])
+        el = rows[head].index("elapsed")
+        data = [r for r in data if len(r) > el and off <= float(r[el]) / 1e9 < off + secs]
+    ms = [float(r[col]) for r in data]
+    # A log started by MangoHud's hotkey (FRAMES_DELAY=key) opens with the time since the frame before logging began,
+    # hours rather than milliseconds (12,713,600 ms in a Galactic Racer run): not a frame of the window.
+    if ms and ms[0] > 10000:
+        ms = ms[1:]
+    return ms, os.path.getmtime(logs[-1])
+
+
+def wine_fps(run, last=None):
+    """Wine's present rate (bench/run.sh WINE_FPS=1), where MangoHud cannot load (32-bit games): Proton's log in the run
+    dir has a line about every 1.5 s, 'SECS.MS:TID:trace:fps:... @ approx 59.94fps, total 59.90fps'. No frame times, so
+    no 1% low. Keeps the last `last` seconds (WINE_FPS_LAST, default 60), where the operator holds the scene."""
+    import glob
+    logs = sorted(glob.glob(os.path.join(run, "steam-*.log")))
+    pts = []
+    for line in open(logs[-1], errors="replace") if logs else []:
+        m = re.search(r"^(\d+\.\d+):.*trace:fps:.*@ approx ([\d.]+)fps", line)
+        if m:
+            pts.append((float(m[1]), float(m[2])))
+    if len(pts) < 2:
+        return None
+    last = float(os.environ.get("WINE_FPS_LAST") or 60) if last is None else last
+    keep = [i for i in range(1, len(pts)) if pts[i][0] > pts[-1][0] - last]
+    dur = {i: pts[i][0] - pts[i - 1][0] for i in keep}   # each line averages the time since the one before it
+    secs = sum(dur.values())
+    if secs <= 0:
+        return None
+    fps = [pts[i][1] for i in keep]
+    end = os.path.join(run, "bench_end")
+    meta = json.load(open(os.path.join(run, "meta.json"))) if os.path.exists(os.path.join(run, "meta.json")) else {}
+    return {"game": meta.get("game") or os.path.basename(run), "api": meta.get("api") or None, "resolution": None,
+            "preset": "Wine present rate (about 1.5 s windows, no frame times)",
+            "reported_avg_fps": sum(pts[i][1] * dur[i] for i in keep) / secs, "min_fps": min(fps), "max_fps": max(fps),
+            "seconds": secs, "end_ts": int(open(end).read()) if os.path.exists(end) else os.path.getmtime(logs[-1]),
+            "fps_windows": [(round(pts[i][0] - pts[keep[0] - 1][0], 1), pts[i][1]) for i in keep]}
 
 
 def parse_frames(run):
-    """Games without a benchmark of their own: everything comes from the MangoHud log."""
+    """Games without a benchmark of their own: everything comes from the MangoHud log (else Wine's present rate)."""
     ms, end = mangohud_frames(run)
     if not ms:
+        w = wine_fps(run)
+        if w:
+            return w
         raise SystemExit("no MangoHud frame log in " + run)
     meta = json.load(open(os.path.join(run, "meta.json"))) if os.path.exists(os.path.join(run, "meta.json")) else {}
     fps = sorted(1000 / x for x in ms if x > 0)
-    return {"game": meta.get("game") or os.path.basename(run), "api": meta.get("api") or None, "resolution": "1080p",
-            "preset": "scene capture (MangoHud)", "reported_avg_fps": 1000 * len(ms) / sum(ms), "min_fps": fps[0],
+    preset = os.path.join(run, "preset")   # an adapter's one-line description of the settings, if it writes one
+    return {"game": meta.get("game") or os.path.basename(run), "api": meta.get("api") or None, "resolution": None,
+            "preset": (open(preset).read().strip() if os.path.exists(preset) else "") or "scene capture (MangoHud)",
+            "reported_avg_fps": 1000 * len(ms) / sum(ms), "min_fps": fps[0],
             "max_fps": fps[-1], "seconds": sum(ms) / 1000, "rendered_ms": ms, "displayed_ms": ms, "end_ts": end}
 
 
@@ -150,16 +262,28 @@ def build(run, game, label):
     mean = lambda k: round(sum(r.get(k) or 0 for r in win) / len(win), 1)
     rate = lambda ms: round(1000 * len(ms) / sum(ms), 1) if ms else None
     base = os.path.basename(run)
+    mode, hz = display_info(run)
+    res = p.get("resolution") or (res_label(*saved_resolution(run)) if saved_resolution(run) else None) \
+        or (res_label(*mode.split("x")) if mode else None)
     doc = {
         "ts": f"{base[0:4]}-{base[4:6]}-{base[6:8]}T{base[9:11]}:{base[11:13]}", "run_dir": base, "variant": label,
-        "game": p["game"], "game_version": p.get("game_version"), "api": p.get("api"), "resolution": p["resolution"], "preset": p["preset"],
+        "game": p["game"], "game_version": p.get("game_version"), "api": p.get("api"), "resolution": res, "preset": p["preset"],
+        "display": mode, "refresh_hz": hz,
+        # Frames a 59.94 Hz TV shows late with VSync on: slower than one refresh interval.
+        "frames_over_refresh_pct": round(100 * sum(x > 1000 / hz for x in shown) / len(shown), 1) if shown and hz else None,
         "avg_fps": rate(shown) or round(p["reported_avg_fps"], 1), "low1_fps": round(low1(shown), 1) if shown else p.get("low1_fps"),
         "rendered_fps": rate(rendered) or round(p["reported_avg_fps"], 1), "rendered_low1_fps": round(low1(rendered), 1) if rendered else None,
         "frame_gen": bool(p.get("frame_gen")), "reported_avg_fps": round(p["reported_avg_fps"], 1),
         "min_fps": round(p["min_fps"], 1), "max_fps": round(p["max_fps"], 1), "frames": len(shown) or None, "seconds": round(p["seconds"], 1),
+        # Hitches: the frames a player feels as stutter, whatever the average.
+        "p999_frame_ms": round(sorted(shown)[min(len(shown) - 1, int(0.999 * len(shown)))], 1) if shown else None,
+        "max_frame_ms": round(max(shown), 1) if shown else None,
+        "frames_over_50ms": sum(x > 50 for x in shown) if shown else None,
         "gpu_util": mean("gpu"), "gpu_power_w": mean("power"), "gpu_clock_mhz": mean("clock"),
         "cpu_util": mean("cpu"), "cpu_x925": mean("cpu_x925"), "cpu_a725": mean("cpu_a725"),
     }
+    env = lambda k, d: float(os.environ.get(k) or d)
+    doc["target"] = target(doc, rendered, env("TARGET_AVG", 58), env("TARGET_LOW1", 48), env("TARGET_HITCHES", 2))
     if p.get("scenes"):
         doc["scenes"] = p["scenes"]
     apps = os.path.join(run, "gpu-apps")   # bench/run.sh: other GPU compute processes seen during the run
@@ -171,8 +295,10 @@ def build(run, game, label):
         doc["scheduler"] = words[1].split("_")[0] if len(words) > 1 and words[0] == "enabled" else "default"
     pts, w0 = thin(win), win[0]["ts"]
     doc["series"] = {"t": [round(r["ts"] - w0, 1) for r in pts], **{k: [r.get(k) for r in pts] for k in ("gpu", "power", "cpu", "cpu_x925", "clock")}}
-    f = thin(fps_per_second(shown))
+    f = thin(fps_per_second(shown)) or thin(p.get("fps_windows") or [])
     doc["fps_series"] = {"t": [t for t, _ in f], "fps": [v for _, v in f]}
+    if p.get("fps_windows"):   # Wine's averages: the slowest window shows whether a locked-60 game held 60
+        doc["min_window_fps"] = round(min(v for _, v in p["fps_windows"]), 1)
     if p.get("frame_gen"):
         doc["fps_series"]["rendered"] = [v for _, v in thin(fps_per_second(rendered))][:len(f)]
     return doc
@@ -200,6 +326,9 @@ def selftest():
     assert d["avg_fps"] == 100.0 and d["rendered_fps"] == 50.0 and d["frame_gen"] and d["gpu_util"] == 60.0, d
     assert d["ts"] == "2026-10-07T10:15" and d["resolution"] == "1080p" and "rendered" in d["fps_series"]
     assert "DLSS Quality" in d["preset"], d["preset"]
+    # 100 fps shown is 50 rendered: the target judges what is rendered; no display file, no refresh-based share
+    assert d["target"]["verdict"] == "fail" and d["target"]["why"] == ["average 50.0 < 58"], d["target"]
+    assert d["display"] is None and d["frames_over_refresh_pct"] is None, d
     run2 = os.path.join(os.path.dirname(run), "20261007-113000-rottr-t")
     res2 = os.path.join(run2, "result")
     os.makedirs(res2)
@@ -208,11 +337,13 @@ def selftest():
         "Geothermal Valley: 40.78 FPS (min: 2.41, max: 83.04)\nOverall score: 83.10 FPS\n")
     open(os.path.join(res2, "bench_start"), "w").write(str(int(end) - 2))
     open(os.path.join(res2, "bench_end"), "w").write(str(int(end)))
-    open(os.path.join(res2, "settings.txt"), "w").write('"EnableDX12"=dword:00000001\n')
+    open(os.path.join(res2, "settings.txt"), "w").write(
+        '"EnableDX12"=dword:00000001\n"FullscreenHeight"=dword:00000870\n"FullscreenWidth"=dword:00000f00\n')
     os.link(os.path.join(run, "telemetry.jsonl"), os.path.join(run2, "telemetry.jsonl"))
     r = build(run2, "rottr", "t")
     assert r["avg_fps"] == 83.1 and r["low1_fps"] is None and len(r["scenes"]) == 3 and r["min_fps"] == 2.4, r
     assert r["api"].startswith("DirectX 12") and r["scenes"][2]["scene"] == "Geothermal Valley", r
+    assert r["resolution"] == "2160p" and r["target"]["verdict"] == "unknown", (r["resolution"], r["target"])
     run3 = os.path.join(os.path.dirname(run), "20261007-193902-rdr2-t")
     res3 = os.path.join(run3, "result")
     os.makedirs(res3)
@@ -222,21 +353,65 @@ def selftest():
         "Percentiles in ms for pass 0\n99%,\t10.00\n\nPercentiles in ms for pass 1\n50%,\t12.00\n99%,\t20.00\n\n"
         "GPU: NVIDIA GB10\tAPI: DX12\tVRAM: 93457 MB\n")
     open(os.path.join(res3, "bench_end"), "w").write(str(int(end)))
+    open(os.path.join(run3, "system.xml"), "w").write(
+        '<screenWidth value="3840" />\n<screenHeight value="2160" />\n<screenWidthWindowed value="1920" />\n')
     os.link(os.path.join(run, "telemetry.jsonl"), os.path.join(run3, "telemetry.jsonl"))
     g = build(run3, "rdr2", "t")
     assert g["avg_fps"] == 76.0 and g["low1_fps"] == 50.0 and g["min_fps"] == 8.9 and len(g["scenes"]) == 2, g
     assert g["api"].startswith("DirectX 12") and g["seconds"] == 134.3, g
+    assert g["resolution"] == "2160p" and g["target"]["verdict"] == "pass", (g["resolution"], g["target"])
     run4 = os.path.join(os.path.dirname(run), "20261008-012347-dos2-t")
     os.makedirs(os.path.join(run4, "frames"))
     open(os.path.join(run4, "frames", "FEX_2026-10-08_01-23-47.csv"), "w").write(
         "os,cpu,gpu,ram,kernel,driver,cpuscheduler\nUbuntu,,,1,6.17,,performance\n"
-        "fps,frametime,cpu_load,gpu_load,elapsed\n" + "".join("60,%s,15,25,1\n" % ("50.0" if i == 0 else "10.0") for i in range(100)))
+        "fps,frametime,cpu_load,gpu_load,elapsed\n0.0001,12713600,1,1,1\n" + "".join("60,%s,15,25,1\n" % ("50.0" if i == 0 else "10.0") for i in range(100)))
     open(os.path.join(run4, "frames", "FEX_2026-10-08_01-23-47_summary.csv"), "w").write("Average FPS\n96\n")
     json.dump({"game": "Divinity: Original Sin 2", "api": "DirectX 11 (DXVK)"}, open(os.path.join(run4, "meta.json"), "w"))
+    open(os.path.join(run4, "display"), "w").write("3840x2160 59.94\n")
     os.link(os.path.join(run, "telemetry.jsonl"), os.path.join(run4, "telemetry.jsonl"))
     f = build(run4, "dos2", "t")
     assert f["frames"] == 100 and f["avg_fps"] == round(100000 / 1040, 1) and f["low1_fps"] == 20.0, f
     assert f["game"] == "Divinity: Original Sin 2" and f["max_fps"] == 100.0 and f["min_fps"] == 20.0, f
+    assert f["max_frame_ms"] == 50.0 and f["frames_over_50ms"] == 0 and f["p999_frame_ms"] == 50.0, f
+    # No settings file in the run: the display's mode; one frame of 100 is slower than a 59.94 Hz refresh
+    assert f["resolution"] == "2160p" and f["display"] == "3840x2160" and f["refresh_hz"] == 59.94, f
+    assert f["frames_over_refresh_pct"] == 1.0 and f["target"]["verdict"] == "fail", f
+    assert f["target"]["why"] == ["1% low 20.0 < 48"], f["target"]
+    run5 = os.path.join(os.path.dirname(run), "20261013-010000-galacticracer-t")   # a cropped log: frames 2 s to 3 s
+    os.makedirs(os.path.join(run5, "frames"))
+    open(os.path.join(run5, "frames", "FEX_2026-10-13_01-00-00.csv"), "w").write(
+        "os,cpu\nUbuntu,x\nfps,frametime,elapsed\n0.0001,12713600,500000000\n"
+        + "".join("50,20.0,%d\n" % (int(1e9) + i * int(2e7)) for i in range(150)))
+    open(os.path.join(run5, "frames_window"), "w").write("2 1\n")
+    open(os.path.join(run5, "GameUserSettings.ini"), "w").write(
+        "LastUserConfirmedResolutionSizeX=1920\nResolutionSizeX=2560\nResolutionSizeY=1440\n")
+    os.link(os.path.join(run, "telemetry.jsonl"), os.path.join(run5, "telemetry.jsonl"))
+    assert mangohud_frames(run5)[0] == [20.0] * 50, len(mangohud_frames(run5)[0])
+    assert saved_resolution(run5) == (2560, 1440) and res_label(2560, 1440) == "1440p" and res_label(3440, 1440) == "3440x1440"
+    open(os.path.join(run5, "preset"), "w").write("DLSS Performance (render 1920x1080)\n")
+    assert parse_frames(run5)["preset"] == "DLSS Performance (render 1920x1080)"
+    # A 32-bit game: no MangoHud log, Wine's present rate every 1.5 s; the last 3 s are kept (one window at 30 fps)
+    run6 = os.path.join(os.path.dirname(run), "20261013-170000-manual-t")
+    os.makedirs(run6)
+    open(os.path.join(run6, "steam-235460.log"), "w").write(
+        "Proton: experimental\n100.000:0024:trace:fps:present 0x1 @ approx 60.00fps, total 60.00fps\n"
+        "101.500:0024:trace:fps:present 0x1 @ approx 59.94fps, total 59.97fps\n"
+        "103.000:0024:trace:fps:present 0x1 @ approx 60.00fps, total 59.98fps\n"
+        "104.500:0024:trace:fps:present 0x1 @ approx 30.00fps, total 54.00fps\n")
+    open(os.path.join(run6, "display"), "w").write("3840x2160 59.94\n")
+    os.link(os.path.join(run, "telemetry.jsonl"), os.path.join(run6, "telemetry.jsonl"))
+    os.environ["WINE_FPS_LAST"] = "3"
+    w = build(run6, "manual", "t")
+    del os.environ["WINE_FPS_LAST"]
+    assert w["avg_fps"] == 45.0 and w["min_window_fps"] == 30.0 and w["low1_fps"] is None, w
+    assert w["fps_series"]["fps"] == [60.0, 30.0] and w["target"]["verdict"] == "fail", w
+    open(os.path.join(run5, "dx12user.settings"), "w").write('VSync=false\r\nResolution="3840x2160"\r\n')
+    os.remove(os.path.join(run5, "GameUserSettings.ini"))
+    assert saved_resolution(run5) == (3840, 2160), saved_resolution(run5)
+    # 50 fps with frames of 20 ms: average below the target; three 60 ms hitches in 1.12 s are far over 2 a minute
+    t = target({"rendered_fps": 50.0, "rendered_low1_fps": 16.7}, [20.0] * 50 + [60.0] * 3)
+    assert t["verdict"] == "fail" and len(t["why"]) == 3, t
+    assert target({"rendered_fps": 61.0, "rendered_low1_fps": 49.0}, [16.4] * 3600)["verdict"] == "pass"
     print("ok")
 
 

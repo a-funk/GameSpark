@@ -1,0 +1,261 @@
+From 0004000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: GameSpark <gamespark@localhost>
+Date: Sat, 17 Oct 2026 22:30:00 -0700
+Subject: [PATCH 4/4] mtrack: code pages made writable check their own code (FEX_GSSMCWX)
+
+Local GameSpark patch, not submitted upstream (FEX does not accept AI-generated code). Enabled with FEX_GSSMCWX=1;
+off by default, and only active with SMCChecks=mtrack (FEX's default).
+
+Street Fighter 6's Denuvo hooks ntdll's NtProtectVirtualMemory stub with kernelbase's WriteProcessMemory: the page is
+made PAGE_EXECUTE_WRITECOPY (host RWX), NtWriteVirtualMemory writes the hook bytes, the old protection is restored.
+Wine always performs NtWriteVirtualMemory in wineserver, with process_vm_writev. Under mtrack FEX write-protects a
+writable page (PROT_READ) as soon as it translates code on it, and the stub's own return path is translated right
+after the mprotect, so process_vm_writev fails with EFAULT: WriteProcessMemory returns ERROR_PARTIAL_COPY, Denuvo
+raises "Error at hooking API NtProtectVirtualMemory" and exits with 0xDEADC0DE. SMCChecks=full never write-protects,
+so the game boots with it, but checking every instruction of the whole program costs a lot (CPU-bound at ~48 fps in
+Training Mode at 4K).
+
+With FEX_GSSMCWX=1, an mprotect that makes executable pages writable marks them (an interval list in the syscall
+handler, guarded by the VMA tracking lock) until an mprotect makes them non-writable again or they are unmapped:
+- mtrack does not write-protect marked pages, so writes from other processes land, as on Windows;
+- the frontend asks the syscall handler (new FEXCore::HLE::SyscallHandler::NeedsFullSMCChecks) about each decoded
+  block and sets ForceFullSMCDetection on blocks with code on a marked page: each of their instructions compares its
+  bytes before it runs, whichever way the block is entered (dispatcher, block link, call-return stack);
+- GuestMprotect already invalidates the mprotected range after tracking it, so code translated before the mark is
+  dropped and translated again with the checks, and the mprotect that unmarks the pages invalidates them again.
+FEX_GSSMCWX=2 also marks every page mapped or mprotected writable+executable, whatever it was before (SF6's
+executable has a 318 MB RWX section): slower, for memory where mtrack misses writes (it also misses writes to a RWX
+page while another thread runs code on that page). FEX_GSSMCWX_LOG=1 logs the marks to stderr. Not for use with FEX's
+disk cache: blocks loaded from it skip the frontend.
+---
+ FEXCore/Source/Interface/Core/Frontend.cpp                        | 19 +++++++
+ FEXCore/include/FEXCore/HLE/SyscallHandler.h                      |  5 ++
+ Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.h              | 10 ++++
+ Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp | 98 +++++++++++++++++++++++++++++++++++++
+ 4 files changed, 132 insertions(+)
+
+diff --git a/FEXCore/Source/Interface/Core/Frontend.cpp b/FEXCore/Source/Interface/Core/Frontend.cpp
+index bffd784..c2ec644 100644
+--- a/FEXCore/Source/Interface/Core/Frontend.cpp
++++ b/FEXCore/Source/Interface/Core/Frontend.cpp
+@@ -1742,6 +1742,25 @@ void Decoder::DecodeLoop(const uint8_t* _InstStream, uint64_t GuestSizePause) {
+     Block.IsEntryPoint = BlockInfo.EntryPoints.contains(Block.Entry);
+   }
+ 
++  // Local GameSpark patch (FEX_GSSMCWX): blocks with code on pages that were made writable while holding code check
++  // each instruction's bytes before running it (Core.cpp), however they are entered: dispatcher, block link or return.
++  {
++    uint64_t CodeMin = ~0ULL, CodeEnd = 0;
++    for (const auto& Block : BlockInfo.Blocks) {
++      if (Block.Size) {
++        CodeMin = std::min(CodeMin, Block.Entry);
++        CodeEnd = std::max(CodeEnd, Block.Entry + Block.Size);
++      }
++    }
++    if (CodeMin < CodeEnd && CTX->SyscallHandler->NeedsFullSMCChecks(Thread, CodeMin, CodeEnd)) [[unlikely]] {
++      for (auto& Block : BlockInfo.Blocks) {
++        if (Block.Size && CTX->SyscallHandler->NeedsFullSMCChecks(Thread, Block.Entry, Block.Entry + Block.Size)) {
++          Block.ForceFullSMCDetection = true;
++        }
++      }
++    }
++  }
++
+   // now that multiblock has settled down, remove any branch masks we put down that didn't end the block
+   if (WantsDataMasks) {
+     PruneInlinedBranchDataMasks();
+diff --git a/FEXCore/include/FEXCore/HLE/SyscallHandler.h b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+index 0ba0218..d76ebdd 100644
+--- a/FEXCore/include/FEXCore/HLE/SyscallHandler.h
++++ b/FEXCore/include/FEXCore/HLE/SyscallHandler.h
+@@ -38,6 +38,11 @@ public:
+   virtual void UnmarkOvercommitRange(uint64_t Start, uint64_t Length) {}
+   virtual ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) = 0;
+   virtual std::optional<ExecutableFileSectionInfo> LookupExecutableFileSection(Core::InternalThreadState* Thread, uint64_t GuestAddr) = 0;
++  // Local GameSpark patch (FEX_GSSMCWX): true if guest code in [Start, End) lies on a page that the guest made writable
++  // while it held code. Such code is checked before each instruction, as with SMCChecks=full.
++  virtual bool NeedsFullSMCChecks(Core::InternalThreadState* Thread, uint64_t Start, uint64_t End) {
++    return false;
++  }
+ 
+   virtual void PreCompile() {}
+ 
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.h
+index 4721fc3..ea5e80b 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.h
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.h
+@@ -291,6 +291,7 @@ public:
+   void InvalidateGuestCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override;
+   std::optional<FEXCore::ExecutableFileSectionInfo>
+   LookupExecutableFileSection(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestAddr) final override;
++  bool NeedsFullSMCChecks(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t End) override;
+ 
+   void TriggerGuestLibWrapperCodeCacheLoad(FEXCore::Core::InternalThreadState&, uint64_t AnyAddr);
+   int OpenCodeMapFile() override;
+@@ -373,6 +374,15 @@ private:
+   fextl::unique_ptr<FEX::HLE::MemAllocator> Alloc32Handler {};
+   std::atomic<uint64_t> AnonSharedId {1};
+ 
++  // Local GameSpark patch (FEX_GSSMCWX): guest pages made writable while they held code (FEX_GSSMCWX=2: also any page
++  // mapped or made writable+executable), until an mprotect makes them non-writable or they are unmapped. Code on them
++  // checks itself before each instruction, and mtrack leaves them writable. Guarded by VMATracking.Mutex; HasWXPages
++  // lets lookups skip the lock while the set is empty.
++  FEXCore::IntervalList<uint64_t> WXPages;
++  std::atomic<bool> HasWXPages {};
++  void TrackWXPages(uint64_t Base, uint64_t Top, int Prot);
++  void UntrackWXPages(uint64_t Base, uint64_t Top);
++
+   static inline uint64_t GetArg(bool Is64Bit, FEXCore::Core::CpuStateFrame* Frame, size_t Arg) {
+     constexpr size_t SyscallArgs = 7;
+     using SyscallArray = std::array<uint64_t, SyscallArgs>;
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
+index 94bdd37..cf4623d 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
+@@ -12,6 +12,8 @@ $end_info$
+ #include "Common/FEXServerClient.h"
+ #include "Common/FileMappingBaseAddress.h"
+ 
++#include <cstdio>
++#include <cstdlib>
+ #include <filesystem>
+ #include <sys/file.h>
+ #include <sys/mman.h>
+@@ -31,6 +33,23 @@ $end_info$
+ #include <Linux/Utils/ELFParser.h>
+ 
+ namespace FEX::HLE {
++// Local GameSpark patch: FEX_GSSMCWX=1 (or 2) enables WXPages with SMCChecks=mtrack; FEX_GSSMCWX_LOG=1 logs its changes.
++static int GSSMCWXMode() {
++  static const int Mode = [] {
++    const char* Env = getenv("FEX_GSSMCWX");
++    return Env && (Env[0] == '1' || Env[0] == '2') ? Env[0] - '0' : 0;
++  }();
++  return Mode;
++}
++
++static bool GSSMCWXLog() {
++  static const bool Log = [] {
++    const char* Env = getenv("FEX_GSSMCWX_LOG");
++    return Env && Env[0] == '1';
++  }();
++  return Log;
++}
++
+ static void HandleSegfaultForCodeCacheFinalization(FEXCore::Core::InternalThreadState& Thread, FEXCore::MappedCodeCacheFile& Code,
+                                                    uintptr_t FaultAddress) {
+   FEXCORE_PROFILE_SCOPED("Load code cache page");
+@@ -145,6 +164,13 @@ void SyscallHandler::MarkGuestExecutableRange(FEXCore::Core::InternalThreadState
+ 
+     auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, Thread);
+ 
++    // Local GameSpark patch (FEX_GSSMCWX): code on these pages checks itself, so leave them writable. Write-protecting
++    // them also broke writes from other processes: wineserver performs NtWriteVirtualMemory with process_vm_writev,
++    // which fails on a page mprotected read-only here (kernelbase's WriteProcessMemory to a code page).
++    if (HasWXPages.load(std::memory_order_relaxed) && WXPages.Contains({Base, Top})) {
++      return;
++    }
++
+     // Find the first mapping at or after the range ends, or ::end().
+     // Top points to the address after the end of the range
+     auto Mapping = VMATracking.VMAs.lower_bound(Top);
+@@ -217,6 +243,67 @@ SyscallHandler::LookupExecutableFileSection(FEXCore::Core::InternalThreadState*
+   return BuildSectionInfo(*Entry.Resource, MappingBaseAddr, Entry.Length);
+ }
+ 
++// Local GameSpark patch (FEX_GSSMCWX): asked by the frontend for the blocks it decodes.
++bool SyscallHandler::NeedsFullSMCChecks(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t End) {
++  if (!HasWXPages.load(std::memory_order_acquire)) {
++    return false;
++  }
++  auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, Thread);
++  return WXPages.Intersect({Start, End});
++}
++
++// Local GameSpark patch (FEX_GSSMCWX). Called by TrackMprotect before the VMAs take the new protection; GuestMprotect
++// then invalidates the range, so code translated before a page was marked is dropped and translated again with checks.
++// - VMATracking.Mutex must be unique_locked
++void SyscallHandler::TrackWXPages(uint64_t Base, uint64_t Top, int Prot) {
++  if (!(Prot & PROT_WRITE)) {
++    // No longer writable: the range's code is invalidated, and it cannot change again without another mprotect.
++    UntrackWXPages(Base, Top);
++    return;
++  }
++
++  auto Add = [this, Prot](uint64_t Start, uint64_t End) {
++    WXPages.Insert({Start, End});
++    HasWXPages.store(true, std::memory_order_release);
++    if (GSSMCWXLog()) {
++      fprintf(stderr, "FEX GSSMCWX: pid %d checks code on 0x%lx-0x%lx (mprotect prot %d)\n", ::getpid(), (unsigned long)Start,
++              (unsigned long)End, Prot);
++    }
++  };
++
++  if (GSSMCWXMode() == 2 && (Prot & PROT_EXEC)) {
++    Add(Base, Top);
++    return;
++  }
++
++  // Pages that hold code (are executable) and become writable: code patched in place, like Denuvo's hooks of ntdll.
++  // Marked pages stay marked while writable, so code made writable without exec and then RWX keeps its mark.
++  auto Mapping = VMATracking.VMAs.upper_bound(Base);
++  if (Mapping != VMATracking.VMAs.begin()) {
++    --Mapping;
++  }
++  for (; Mapping != VMATracking.VMAs.end() && Mapping->first < Top; ++Mapping) {
++    const auto MapTop = Mapping->first + Mapping->second.Length;
++    if (MapTop > Base && Mapping->second.Prot.Executable) {
++      Add(std::max(Base, Mapping->first), std::min(Top, MapTop));
++    }
++  }
++}
++
++// - VMATracking.Mutex must be unique_locked
++void SyscallHandler::UntrackWXPages(uint64_t Base, uint64_t Top) {
++  if (!HasWXPages.load(std::memory_order_relaxed) || !WXPages.Intersect({Base, Top})) {
++    return;
++  }
++  WXPages.Remove({Base, Top});
++  if (WXPages.Empty()) {
++    HasWXPages.store(false, std::memory_order_relaxed);
++  }
++  if (GSSMCWXLog()) {
++    fprintf(stderr, "FEX GSSMCWX: pid %d stops checking code on 0x%lx-0x%lx\n", ::getpid(), (unsigned long)Base, (unsigned long)Top);
++  }
++}
++
+ FEXCore::HLE::ExecutableRangeInfo SyscallHandler::QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) {
+   auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, Thread);
+   auto ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread);
+@@ -615,6 +702,12 @@ SyscallHandler::TrackMmap(FEXCore::Core::InternalThreadState* Thread, uint64_t a
+ 
+   VMATracking::MappedResource* Resource = nullptr;
+ 
++  // Local GameSpark patch (FEX_GSSMCWX): a new mapping starts unmarked; FEX_GSSMCWX=2 marks a writable+executable one.
++  UntrackWXPages(addr, addr + Size);
++  if (GSSMCWXMode() == 2 && SMCChecks == FEXCore::Config::CONFIG_SMC_MTRACK && (prot & PROT_WRITE) && (prot & PROT_EXEC)) {
++    TrackWXPages(addr, addr + Size, prot);
++  }
++
+   std::optional<SyscallHandler::LateApplyExtendedVolatileMetadata> VolatileMetadata = std::nullopt;
+ 
+   if (!(flags & MAP_ANONYMOUS)) {
+@@ -785,11 +878,16 @@ void SyscallHandler::AddVirtualPage(FEXCore::Core::InternalThreadState* Thread,
+ void SyscallHandler::TrackMunmap(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length) {
+   uint64_t Size = FEXCore::AlignUp(length, FEXCore::Utils::FEX_PAGE_SIZE);
+   VMATracking.DeleteVMARange(CTX, reinterpret_cast<uintptr_t>(addr), Size);
++  UntrackWXPages(reinterpret_cast<uintptr_t>(addr), reinterpret_cast<uintptr_t>(addr) + Size); // Local GameSpark patch
+ }
+ 
+ void SyscallHandler::TrackMprotect(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t len, int prot) {
+   uint64_t Size = FEXCore::AlignUp(len, FEXCore::Utils::FEX_PAGE_SIZE);
+ 
++  if (GSSMCWXMode() && SMCChecks == FEXCore::Config::CONFIG_SMC_MTRACK) [[unlikely]] {
++    // Local GameSpark patch: before the VMAs change, TrackWXPages reads which pages held code.
++    TrackWXPages(reinterpret_cast<uintptr_t>(addr), reinterpret_cast<uintptr_t>(addr) + Size, prot);
++  }
+   VMATracking.ChangeProtectionFlags(reinterpret_cast<uintptr_t>(addr), Size, VMATracking::VMAProt::fromProt(prot));
+ }
+ 
+-- 
+2.43.0
