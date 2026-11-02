@@ -5,7 +5,9 @@
 # (docs/FINDINGS.md). Steps follow Mitchell Augustin's fex_autoinstall proof of concept
 # (https://github.com/MitchellAugustin/fex_autoinstall), reimplemented here.
 #
-# Usage: system/fex-system.sh install|share-snap|status|uninstall
+# Usage: system/fex-system.sh install|share-snap|controllers|status|uninstall
+#   controllers: udev rule so this (32-bit, FEX) Steam reads Bluetooth Xbox pads as raw HID; through evdev it
+#   misreads them (controller/60-gamespark-xbox-hidraw.rules has the why). Part of install.
 #   Launch Steam afterwards with: FEXBash steam   (or GAMESPARK_STEAM=fex tools/steam-console.sh)
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$ROOT/lib/env.sh"
@@ -71,15 +73,24 @@ install_ngx() {
   echo "NGX libraries for driver $ver installed into $fs"
 }
 
+RULES=/etc/udev/rules.d/60-gamespark-xbox-hidraw.rules
+install_controller_rules() {   # applies to connected pads at once; Steam picks them up when it next starts
+  as_root sh -c "install -m 644 '$ROOT/controller/60-gamespark-xbox-hidraw.rules' $RULES && udevadm control --reload && \
+    udevadm trigger --subsystem-match=hidraw --action=change"
+}
+
 case "${1:-status}" in
   install)
-    install_packages && install_rootfs_and_config && install_apparmor && install_ngx && "$0" status ;;
+    install_packages && install_rootfs_and_config && install_apparmor && install_ngx && install_controller_rules && "$0" status ;;
+  controllers)
+    install_controller_rules && "$0" status | grep "^Controller rule" ;;
   status)
     echo "FEX: $(dpkg-query -W -f='${Package} ${Version}' "fex-emu-$VARIANT" 2>/dev/null || echo not installed)"
     echo "Steam launcher: $(dpkg-query -W -f='${Version}' steam-launcher 2>/dev/null || echo not installed)"
     echo "RootFS: $(ls "$ROOTFS_DIR" 2>/dev/null | tr '\n' ' ')"
     echo "Config: $(cat "$FEX_CFG/Config.json" 2>/dev/null)"
-    FEXGetConfig --tso-emulation-info 2>/dev/null | sed 's/^/TSO: /' ;;
+    FEXGetConfig --tso-emulation-info 2>/dev/null | sed 's/^/TSO: /'
+    echo "Controller rule: $(cmp -s "$ROOT/controller/60-gamespark-xbox-hidraw.rules" $RULES && echo installed || echo "missing ($0 controllers)")" ;;
   share-snap)
     # Run Valve's launcher (under this FEX) on the snap's Steam folder: same login, library, Proton prefixes and
     # settings, so only FEX differs between the two setups. Only one of the two Steams may run at a time.
@@ -95,7 +106,7 @@ case "${1:-status}" in
     echo "Steam folder: $(readlink "$HOME/.local/share/Steam")" ;;
   uninstall)
     as_root sh -c "apt-get remove -y -qq fex-emu-$VARIANT fex-emu-wine steam-launcher >/dev/null; add-apt-repository -y -r ppa:fex-emu/fex >/dev/null; \
-      rm -f /etc/apparmor.d/steam /etc/apparmor.d/FEX /etc/apparmor.d/FEXBash /etc/apparmor.d/bwrap"
+      rm -f /etc/apparmor.d/steam /etc/apparmor.d/FEX /etc/apparmor.d/FEXBash /etc/apparmor.d/bwrap $RULES"
     echo "Removed packages and profiles. RootFS and config left in $ROOTFS_DIR and $FEX_CFG (delete by hand)." ;;
-  *) die "usage: $0 install|share-snap|status|uninstall" ;;
+  *) die "usage: $0 install|share-snap|controllers|status|uninstall" ;;
 esac

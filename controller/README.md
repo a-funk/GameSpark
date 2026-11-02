@@ -31,3 +31,16 @@ Known quirks:
 - The MT7925 radio occasionally stops hearing any device (`bluetoothctl scan on` finds nothing).
   `bluetoothctl power off; bluetoothctl power on` clears it; `pair.sh --reset` does this first (and drops connected pads).
 - A USB-C cable always works (kernel `xpad` driver), with no pairing at all.
+
+## Steam Big Picture
+
+Steam reads a Bluetooth Xbox pad through raw HID only if the desktop user can open its hidraw node; otherwise it
+falls back to evdev. On the Spark the 32-bit Steam client runs under FEX, which hands it the kernel's 64-bit
+`input_event` layout, so every evdev event is misread: in Big Picture the sticks and D-pad do nothing, while games
+(64-bit Wine) work. `system/fex-system.sh controllers` installs `60-gamespark-xbox-hidraw.rules`, after which the
+FEX Steam opens the pad as raw HID like the DualSense. Restart Steam (or reconnect the pad) once afterwards.
+
+- The snap Steam has no hidraw access, so use the FEX Steam for Big Picture (`system/console-mode.sh enable fex`).
+- `python3 -I controller/evdev32_check.py` checks the FEX behaviour: exit 1 while FEX passes 24-byte events, 0 once
+  a FEX release converts them (then the rule is no longer needed).
+- Wired Xbox pads (kernel `xpad`) have no hidraw node and still go through evdev.

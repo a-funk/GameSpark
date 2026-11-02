@@ -1,0 +1,12 @@
+# Lets Steam open Xbox Wireless Controllers over Bluetooth as raw HID (its own Xbox driver), as Valve's
+# 60-steam-input.rules already does for the Elite 2 (045E:0B22). Without it Steam reads them through evdev, and on
+# the Spark the 32-bit Steam client runs under FEX, which passes it the kernel's 64-bit struct input_event (24 bytes)
+# where it expects the 32-bit one (16 bytes): every event is misread, so in Big Picture the sticks and D-pad do
+# nothing. Games read the pad themselves (64-bit Wine) and are unaffected. See docs/FINDINGS.md.
+# Product IDs (SDL's usb_ids.h): 02E0, 02FD Xbox One S (Bluetooth); 0B20 Xbox One S (BLE firmware);
+# 0B05 Elite Series 2 (Bluetooth); 0B13 Xbox Series X|S (BLE). Installed by system/fex-system.sh controllers.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*045E:02E0*", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*045E:02FD*", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*045E:0B20*", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*045E:0B05*", MODE="0660", TAG+="uaccess"
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", KERNELS=="*045E:0B13*", MODE="0660", TAG+="uaccess"
