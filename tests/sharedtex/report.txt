@@ -1,0 +1,28 @@
+sharedtex repro: cross-API D3D11<->D3D12 shared resources
+ok    D3D12CreateDevice
+ok    D3D11CreateDevice (feature level 0xb000)
+ok    QI ID3D11Device2                            
+ok    QI ID3D11Device5                            
+ok    D3D12 CreateCommittedResource               
+ok    E D3D12 CreateSharedHandle                  
+ok    E D3D12 OpenSharedHandle  (self)            
+ok    D3D11 CreateTexture2D                       
+ok    F QI IDXGIResource                          
+FAIL  F D3D11 GetSharedHandle (self)               hr=0x80070057
+ok    D3D11 CreateTexture2D                       
+ok    A D3D11 IDXGIResource1::CreateSharedHandle  
+ok    A D3D12 OpenSharedHandle  (from D3D11)      
+FAIL  D3D11 CreateTexture2D                        hr=0x80070057
+ok    H D3D11 CreateTexture2D (NV12 decoder)      
+ok    H D3D11 CreateSharedHandle (NV12)           
+ok    H D3D12 OpenSharedHandle  (NV12)            
+ok    I D3D12 CreateCommittedResource (NV12)      
+ok    I D3D12 CreateSharedHandle (NV12)           
+ok    I D3D11 OpenSharedResource1 (NV12)          
+ok    D3D12 CreateCommittedResource               
+ok    B D3D12 CreateSharedHandle                  
+ok    B D3D11 OpenSharedResource1 (from D3D12)    
+ok    C D3D12 CreateFence                         
+ok    C D3D12 CreateSharedHandle (fence)          
+ok    C D3D11 OpenSharedFence   (from D3D12)      
+sharedtex repro done: 2 failure(s)

@@ -9,7 +9,8 @@ ocr() {
   else
     docker image inspect gamespark-ocr >/dev/null 2>&1 || printf 'FROM ubuntu:24.04\nRUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr && rm -rf /var/lib/apt/lists/*\n' \
       | docker build -q -t gamespark-ocr - >/dev/null
-    docker run --rm -v "$(dirname "$IMG"):/w:ro" gamespark-ocr tesseract "/w/$(basename "$IMG")" - "$@" 2>/dev/null
+    # (no network: each container's interface would outlive it in a running Wine game's list, docs/FINDINGS.md)
+    docker run --rm --network none -v "$(dirname "$IMG"):/w:ro" gamespark-ocr tesseract "/w/$(basename "$IMG")" - "$@" 2>/dev/null
   fi
 }
 if [ "${1:-}" = --find ]; then

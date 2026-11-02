@@ -1,0 +1,28 @@
+From: GameSpark (local patch, not for upstream)
+Subject: [PATCH] local: one 1 GiB JIT code buffer from the start
+
+Galactic Racer translates ~600 MB of code per session (Denuvo's VM plus Unreal). With FEX's 16 MB start and 128 MB cap,
+the shared code buffer filled every 20-70 s, and every fill threw away all translations; the re-translation showed as
+~1 s clusters of slow frames. Allocating 1 GiB at first use removes the fills (one buffer for a whole session, 598 MB
+used in a measured 250 s campaign run). Far block links already use the indirect jump thunk (ExitFunctionLink).
+
+diff --git a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+index eee5023..3ae89e3 100644
+--- a/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
++++ b/FEXCore/Source/Interface/Core/SharedCodeBufferManager.cpp
+@@ -12,9 +12,12 @@
+ #endif
+ 
+ namespace FEXCore::CPU {
+-static constexpr size_t INITIAL_CODE_SIZE = 1024 * 1024 * 16;
+-// We don't want to move above 128MB atm because that means we will have to encode longer jumps
+-static constexpr size_t MAX_CODE_SIZE = 1024 * 1024 * 128;
++// Local (GameSpark): one code buffer large enough for a whole game session, allocated at its full size from the start.
++// With the stock 16 MB start and 128 MB cap, a game that translates ~600 MB per session (Galactic Racer: Denuvo's VM
++// plus Unreal) filled the buffer every 20-70 s, and each fill threw away every translation. Block links beyond the
++// +-128 MB branch range already fall back to the indirect jump thunk (Arm64JITCore::ExitFunctionLink).
++static constexpr size_t INITIAL_CODE_SIZE = size_t {1024} * 1024 * 1024;
++static constexpr size_t MAX_CODE_SIZE = size_t {1024} * 1024 * 1024;
+ 
+ CodeBuffer::CodeBuffer(size_t Size, bool ShouldBeNamed)
+   : AllocatedSize(Size) {

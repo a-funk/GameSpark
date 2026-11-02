@@ -7,7 +7,8 @@
 #   tools/steam-config.sh launch-options APPID "FEX_LIBRARYJITNAMING=1 <your other options> %command%"
 # perf samples every core; analyze.py resolves translated addresses through FEX's perf maps.
 #
-# Usage: profile/profile.sh GAME LABEL [DELAY_AFTER_GAME_START_S] [SECONDS]
+# Usage: profile/profile.sh GAME LABEL [DELAY_AFTER_GAME_START_S|key] [SECONDS]
+#   key: start sampling when the adapter starts its frame log (lib/menu.sh frames_start), for menu-driven runs
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$ROOT/lib/env.sh"
 GAME=${1:?game}; L=${2:?label}; DELAY=${3:-50}; SECS=${4:-45}
@@ -20,8 +21,20 @@ RUN_ENV_EXTRA="FEX_LIBRARYJITNAMING=1 ${RUN_ENV_EXTRA:-}" "$ROOT/bench/run.sh" "
 BENCH=$!
 for _ in $(seq 300); do G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break; sleep 1; done
 [ -z "${G:-}" ] && { wait $BENCH; cat "$OUT/bench.log"; die "game never started"; }
-echo "game pid $G; sampling in ${DELAY}s for ${SECS}s"
-sleep "$DELAY"
+if [ "$DELAY" = key ]; then   # adapters that drive menus: sample from the frame log's start (frames_start)
+  echo "game pid $G; sampling for ${SECS}s once the adapter starts its frame log"
+  for _ in $(seq 900); do
+    R=$(ls -td "$SG_DATA"/runs/*-"$GAME-prof-$L" 2>/dev/null | head -1)
+    [ -n "$R" ] && [ -f "$R/bench_start" ] && break
+    kill -0 $BENCH 2>/dev/null || break
+    sleep 1
+  done
+  [ -f "${R:-}/bench_start" ] || { wait $BENCH; cat "$OUT/bench.log"; die "the run never started its frame log"; }
+else
+  echo "game pid $G; sampling in ${DELAY}s for ${SECS}s"
+  sleep "$DELAY"
+fi
+WS=$(pgrep -f "[b]in/wineserver" | paste -sd, -)   # (under FEX its comm is "exe")
 as_root perf record -a -F 499 -o "$DATA" -- sleep "$SECS" 2> "$OUT/perf-record.log"
 wait $BENCH
 
@@ -31,7 +44,8 @@ cp /tmp/perf-[0-9]*.map "$OUT/" 2>/dev/null
 echo "perf maps: $(ls "$OUT"/*.map 2>/dev/null | wc -l)"
 [ "$(ls "$OUT"/*.map 2>/dev/null | wc -l)" = 0 ] && echo "warning: no perf maps; is FEX_LIBRARYJITNAMING=1 in the launch options?" >&2
 as_root perf script -i "$DATA" -F comm,pid,tid,ip,sym,dso 2>/dev/null > "$OUT/perf-script.txt"
-python3 -I "$ROOT/profile/analyze.py" "$OUT/perf-script.txt" "$OUT" > "$OUT/layers.json"
+# Every thread of the game and of its wineserver (Unreal games name dozens of threads; 11 are "GameThread" here).
+python3 -I "$ROOT/profile/analyze.py" "$OUT/perf-script.txt" "$OUT" "pid:$G${WS:+,$WS}" > "$OUT/layers.json"
 cp "$(tail -1 "$OUT/bench.log")/run.json" "$OUT/" 2>/dev/null
 rm -f "$OUT/perf-script.txt" /tmp/perf-[0-9]*.map   # large; layers.json keeps the result
 as_root sh -c "rm -f $SNAP_TMP/perf-*.map"          # FEX writes a new map per process every run

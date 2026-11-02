@@ -7,7 +7,8 @@
 #
 # Usage: system/fex-system.sh install|share-snap|controllers|status|uninstall
 #   controllers: udev rule so this (32-bit, FEX) Steam reads Bluetooth Xbox pads as raw HID; through evdev it
-#   misreads them (controller/60-gamespark-xbox-hidraw.rules has the why). Part of install.
+#   misreads them (controller/60-gamespark-xbox-hidraw.rules has the why). Also a DualSense plugged in by USB takes
+#   over from its Bluetooth link, for haptics (controller/61-gamespark-dualsense-usb.rules). Part of install.
 #   Launch Steam afterwards with: FEXBash steam   (or GAMESPARK_STEAM=fex tools/steam-console.sh)
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$ROOT/lib/env.sh"
@@ -56,15 +57,20 @@ install_apparmor() {
 }
 
 # DLSS under Proton needs NVIDIA's x86 NGX DLLs and libraries inside the RootFS, matching the host driver.
-install_ngx() {
-  local ver fs dso d
+install_ngx() {  # x86 copies of the loaded driver's user space (GL, NGX for DLSS) in the RootFS: they must match it
+  local ver fs dso d src run
   ver=$(cat /sys/module/nvidia/version 2>/dev/null || nvidia-smi --query-gpu=driver_version --format=csv,noheader)
   fs=$ROOTFS_DIR/$(python3 -I -c 'import json,os; print(json.load(open(os.path.expanduser(os.environ.get("XDG_CONFIG_HOME", "~/.config") + "/fex-emu/Config.json")))["Config"]["RootFS"])')
-  curl -fsSL -o "$TMP/nv.run" "https://download.nvidia.com/XFree86/Linux-x86_64/$ver/NVIDIA-Linux-x86_64-$ver.run"
-  (cd "$TMP" && sh nv.run -x --target nv >/dev/null)
+  [ "$(readlink "$fs/lib/x86_64-linux-gnu/libGLX_nvidia.so.0")" = "libGLX_nvidia.so.$ver" ] && return 0
+  src=$SG_DATA/drivers/x86-$ver run=$SG_DATA/drivers/NVIDIA-Linux-x86_64-$ver.run   # kept: driver swaps need no download
+  if [ ! -d "$src" ]; then
+    mkdir -p "${src%/*}"
+    { [ -s "$run" ] || curl -fsSL -o "$run" "https://download.nvidia.com/XFree86/Linux-x86_64/$ver/NVIDIA-Linux-x86_64-$ver.run"; } &&
+      sh "$run" -x --target "$src" >/dev/null || { rm -rf "$src" "$run"; return 1; }   # a partial download goes too
+  fi
   mkdir -p "$fs/usr/lib/x86_64-linux-gnu/nvidia/wine"
-  cp "$TMP"/nv/*.dll "$fs/usr/lib/x86_64-linux-gnu/nvidia/wine/"
-  for d in "x86_64-linux-gnu:$TMP/nv" "i386-linux-gnu:$TMP/nv/32"; do
+  cp "$src"/*.dll "$fs/usr/lib/x86_64-linux-gnu/nvidia/wine/"
+  for d in "x86_64-linux-gnu:$src" "i386-linux-gnu:$src/32"; do
     for dso in "${d#*:}"/*.so."$ver"; do
       cp -f "$dso" "$fs/lib/${d%%:*}/"
       ( cd "$fs/lib/${d%%:*}" && b=$(basename "$dso" | cut -d. -f1-2) && ln -sf "$(basename "$dso")" "$b.0" && ln -sf "$(basename "$dso")" "$b.1" && ln -sf "$(basename "$dso")" "$b.2" )
@@ -74,9 +80,16 @@ install_ngx() {
 }
 
 RULES=/etc/udev/rules.d/60-gamespark-xbox-hidraw.rules
+DS_RULES=/etc/udev/rules.d/61-gamespark-dualsense-usb.rules DS_HELPER=/usr/local/lib/gamespark/dualsense-usb.sh
+DS_WP=${XDG_CONFIG_HOME:-$HOME/.config}/wireplumber/main.lua.d/51-gamespark-dualsense-not-default.lua
 install_controller_rules() {   # applies to connected pads at once; Steam picks them up when it next starts
-  as_root sh -c "install -m 644 '$ROOT/controller/60-gamespark-xbox-hidraw.rules' $RULES && udevadm control --reload && \
-    udevadm trigger --subsystem-match=hidraw --action=change"
+  # The DualSense pair (controller/61-gamespark-dualsense-usb.rules): a pad plugged in by USB takes over from its
+  # Bluetooth link, for haptics; its sound card never becomes the default output (applies at the next login).
+  as_root sh -c "install -m 644 '$ROOT/controller/60-gamespark-xbox-hidraw.rules' $RULES && \
+    install -D -m 755 '$ROOT/controller/dualsense-usb.sh' $DS_HELPER && \
+    install -m 644 '$ROOT/controller/61-gamespark-dualsense-usb.rules' $DS_RULES && udevadm control --reload && \
+    udevadm trigger --subsystem-match=hidraw --action=change" &&
+  install -D -m 644 "$ROOT/controller/51-gamespark-dualsense-not-default.lua" "$DS_WP"
 }
 
 case "${1:-status}" in
@@ -84,13 +97,18 @@ case "${1:-status}" in
     install_packages && install_rootfs_and_config && install_apparmor && install_ngx && install_controller_rules && "$0" status ;;
   controllers)
     install_controller_rules && "$0" status | grep "^Controller rule" ;;
+  ngx)   # after a driver change (steam_start runs it)
+    install_ngx ;;
   status)
     echo "FEX: $(dpkg-query -W -f='${Package} ${Version}' "fex-emu-$VARIANT" 2>/dev/null || echo not installed)"
     echo "Steam launcher: $(dpkg-query -W -f='${Version}' steam-launcher 2>/dev/null || echo not installed)"
     echo "RootFS: $(ls "$ROOTFS_DIR" 2>/dev/null | tr '\n' ' ')"
     echo "Config: $(cat "$FEX_CFG/Config.json" 2>/dev/null)"
     FEXGetConfig --tso-emulation-info 2>/dev/null | sed 's/^/TSO: /'
-    echo "Controller rule: $(cmp -s "$ROOT/controller/60-gamespark-xbox-hidraw.rules" $RULES && echo installed || echo "missing ($0 controllers)")" ;;
+    echo "Controller rule: $(cmp -s "$ROOT/controller/60-gamespark-xbox-hidraw.rules" $RULES && echo installed || echo "missing ($0 controllers)")"
+    echo "Controller rule (DualSense USB): $(cmp -s "$ROOT/controller/61-gamespark-dualsense-usb.rules" $DS_RULES &&
+      cmp -s "$ROOT/controller/dualsense-usb.sh" $DS_HELPER && cmp -s "$ROOT/controller/51-gamespark-dualsense-not-default.lua" "$DS_WP" &&
+      echo installed || echo "missing ($0 controllers)")" ;;
   share-snap)
     # Run Valve's launcher (under this FEX) on the snap's Steam folder: same login, library, Proton prefixes and
     # settings, so only FEX differs between the two setups. Only one of the two Steams may run at a time.
@@ -106,7 +124,7 @@ case "${1:-status}" in
     echo "Steam folder: $(readlink "$HOME/.local/share/Steam")" ;;
   uninstall)
     as_root sh -c "apt-get remove -y -qq fex-emu-$VARIANT fex-emu-wine steam-launcher >/dev/null; add-apt-repository -y -r ppa:fex-emu/fex >/dev/null; \
-      rm -f /etc/apparmor.d/steam /etc/apparmor.d/FEX /etc/apparmor.d/FEXBash /etc/apparmor.d/bwrap $RULES"
+      rm -f /etc/apparmor.d/steam /etc/apparmor.d/FEX /etc/apparmor.d/FEXBash /etc/apparmor.d/bwrap $RULES $DS_RULES $DS_HELPER"; rm -f "$DS_WP"
     echo "Removed packages and profiles. RootFS and config left in $ROOTFS_DIR and $FEX_CFG (delete by hand)." ;;
   *) die "usage: $0 install|share-snap|controllers|status|uninstall" ;;
 esac

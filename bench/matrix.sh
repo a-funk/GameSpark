@@ -3,6 +3,8 @@
 # mean the profile recorded (bench/tune.py --check). Run it after changing FEX, drivers, Proton or the scheduler;
 # a change that helps one game must not quietly cost another.
 # Usage: bench/matrix.sh [--tolerance PCT]      (Steam running; takes about 5 minutes per game)
+# A profile tuned at another resolution than the display's (all of them were tuned at 1920x1080; the TV runs 3840x2160
+# since 2026-10-13) is listed STALE and not run: re-tune it at the new resolution first (bench/tune.py GAME).
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd); . "$ROOT/lib/env.sh"
 steam_running || die "Steam is not running (tools/steam-console.sh starts it)"
@@ -11,7 +13,7 @@ for conf in "$ROOT"/profiles/"$GAMESPARK_STEAM"/*.conf; do
   [ -e "$conf" ] || continue
   grep -q "<- chosen" "$conf" || { echo "skipped    $(basename "$conf" .conf): hand-written profile"; continue; }
   out=$(python3 -I "$ROOT/bench/tune.py" "$(basename "$conf" .conf)" --check "$@"); rc=$?
-  grep -E "^(ok|REGRESSION|FAILED) " <<<"$out" || echo "$out" | tail -3
+  grep -E "^(ok|REGRESSION|FAILED|STALE) " <<<"$out" || echo "$out" | tail -3
   [ $rc = 0 ] || fail=1
 done
 exit $fail

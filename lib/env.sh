@@ -40,6 +40,30 @@ export DISPLAY XAUTHORITY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
 
 die() { echo "error: $*" >&2; exit 1; }
 
+# The display's current mode, "WIDTHxHEIGHT RATE" (e.g. "3840x2160 59.94"): the primary output's, else the first
+# connected one's. --current reports what the X server already knows; a plain xrandr re-probes every output, which can
+# drop frames in a running game.
+display_mode() {
+  xrandr --current 2>/dev/null | awk '
+    /^[^ \t]/ { on = ($2 == "connected"); primary = ($3 == "primary"); next }
+    on && /\*/ { for (i = 2; i <= NF; i++) if ($i ~ /\*/) {
+                   r = $i; gsub(/[*+]/, "", r); if (primary) p = $1 " " r; else if (m == "") m = $1 " " r } }
+    END { if (p != "") m = p; if (m == "") exit 1; print m }'
+}
+
+# The output resolution adapters write into a game's settings (game_prepare): GAME_RES=WIDTHxHEIGHT, else the display's
+# current mode, so runs measure what the TV shows (3840x2160 since 2026-10-13; the settings were 1920x1080 before).
+game_res() {
+  local m=${GAME_RES:-}
+  [ -n "$m" ] || { m=$(display_mode) && m=${m%% *}; } || return 1
+  [[ $m =~ ^[0-9]+x[0-9]+$ ]] || { echo "error: resolution '$m' is not WIDTHxHEIGHT" >&2; return 1; }
+  echo "$m"
+}
+
+# 32 or 64 for a Windows executable ("PE32 executable" or "PE32+ executable" to file(1)); nothing if unreadable.
+# A 32-bit game runs FEX's i386 Vulkan loader, which loads only i386 layers (no 32-bit Vulkan thunk).
+pe_bits() { case $(file -b "$1" 2>/dev/null) in "PE32+ "*) echo 64 ;; "PE32 "*) echo 32 ;; esac; }
+
 # Fast CPUs as a taskset list: capacity above the midpoint of min and max. GB10 reports 997-1024 for its
 # Cortex-X925 cores and 718-731 for its Cortex-A725 cores, so "equal to max" would pick a single core.
 fast_cpus() {
@@ -49,15 +73,23 @@ fast_cpus() {
     END {for (i=1;i<=NR;i++) if (hi==lo || cap[i] > (lo+hi)/2) out = out (out?",":"") cpu[i]; print out}'
 }
 
-# Run a command as root: directly, via passwordless sudo, or via a privileged container (docker group).
+# Run a command as root: directly, via passwordless sudo, or via a privileged container (docker group). The container
+# shares the host's network (--network host): a container of its own would add and remove a network interface every
+# call, and Wine keeps every interface it has seen (The Witcher 3's stutter, docs/FINDINGS.md).
 as_root() {
   if [ "$uid" = 0 ]; then "$@"
   elif sudo -n true 2>/dev/null; then sudo "$@"
-  else docker run --rm --privileged --pid=host -v /tmp:/tmp alpine nsenter -t 1 -m -u -i -n -p -- "$@"
+  else docker run --rm --privileged --pid=host --network host -v /tmp:/tmp alpine nsenter -t 1 -m -u -i -n -p -- "$@"
   fi
 }
 
 steam_running() { pgrep -f "[u]buntu12_32/steam " >/dev/null; }
+# Start Steam detached. The FEX Steam's x86 driver copies follow the loaded driver first (it can be swapped).
+steam_start() {
+  [ "$GAMESPARK_STEAM" = fex ] && { "$(dirname "${BASH_SOURCE[0]}")/../system/fex-system.sh" ngx ||
+    echo "warning: x86 NVIDIA libraries not synced" >&2; }
+  setsid -f $STEAM_START "$@" >/dev/null 2>&1 < /dev/null
+}
 
 # Send a command to the running Steam client.
 steam_cmd() { timeout 10 sh -c 'printf "%s\n" "$1" > "$2"' _ "$1" "$STEAM_PIPE"; }
