@@ -17,7 +17,7 @@ ConnectionLatency=0
 ```
 
 Restart BlueZ (`sudo systemctl restart bluetooth`), hold the controller's pair button until the logo
-flashes fast, then run `controller/pair-xbox.sh`. Check input with `python3 -I controller/xbox-watch.py 30`.
+flashes fast, then run `controller/pair.sh`. Check input with `python3 -I controller/xbox-watch.py 30`.
 
 Measured during bring-up (btmon): before the change the controller sent zero input notifications; after
 it, 949 notifications in the first minute. The connection interval settings come from the
@@ -29,5 +29,5 @@ Known quirks:
 - Holding the pair button wipes the controller's side of the bond; the Spark then logs
   `PIN or Key Missing` until you pair again.
 - The MT7925 radio occasionally stops hearing any device (`bluetoothctl scan on` finds nothing).
-  `bluetoothctl power off; bluetoothctl power on` clears it; `pair-xbox.sh` does this first.
+  `bluetoothctl power off; bluetoothctl power on` clears it; `pair.sh --reset` does this first (and drops connected pads).
 - A USB-C cable always works (kernel `xpad` driver), with no pairing at all.

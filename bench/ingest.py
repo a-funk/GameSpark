@@ -111,11 +111,37 @@ def parse_rdr2(run):
             "seconds": round(frames.get(len(passes) - 1, 0) / last["avg_fps"], 1), "end_ts": end, "scenes": passes}
 
 
+def mangohud_frames(run):
+    """Frame times (ms) and end time from a MangoHud log (bench/run.sh FRAMES=SECS), or ([], None)."""
+    import glob
+    logs = sorted(f for f in glob.glob(os.path.join(run, "frames", "*.csv")) if not f.endswith("_summary.csv"))
+    if not logs:
+        return [], None
+    rows = list(csv.reader(open(logs[-1])))
+    head = next(i for i, r in enumerate(rows) if r[:2] == ["fps", "frametime"])
+    col = rows[head].index("frametime")
+    return [float(r[col]) for r in rows[head + 1:] if len(r) > col and r[col]], os.path.getmtime(logs[-1])
+
+
+def parse_frames(run):
+    """Games without a benchmark of their own: everything comes from the MangoHud log."""
+    ms, end = mangohud_frames(run)
+    if not ms:
+        raise SystemExit("no MangoHud frame log in " + run)
+    meta = json.load(open(os.path.join(run, "meta.json"))) if os.path.exists(os.path.join(run, "meta.json")) else {}
+    fps = sorted(1000 / x for x in ms if x > 0)
+    return {"game": meta.get("game") or os.path.basename(run), "api": meta.get("api") or None, "resolution": "1080p",
+            "preset": "scene capture (MangoHud)", "reported_avg_fps": 1000 * len(ms) / sum(ms), "min_fps": fps[0],
+            "max_fps": fps[-1], "seconds": sum(ms) / 1000, "rendered_ms": ms, "displayed_ms": ms, "end_ts": end}
+
+
 PARSERS = {"cyberpunk2077": parse_cyberpunk2077, "rottr": parse_rottr, "rdr2": parse_rdr2}
 
 
 def build(run, game, label):
-    p = PARSERS[game](run)
+    p = PARSERS[game](run) if game in PARSERS else parse_frames(run)
+    if not p.get("displayed_ms"):   # a benchmark without per-frame data, captured with FRAMES=SECS
+        p["displayed_ms"] = p["rendered_ms"] = mangohud_frames(run)[0]
     shown, rendered = p.get("displayed_ms") or [], p.get("rendered_ms") or []
     end = p["end_ts"]
     start = end - p["seconds"]
@@ -197,6 +223,17 @@ def selftest():
     g = build(run3, "rdr2", "t")
     assert g["avg_fps"] == 76.0 and g["low1_fps"] == 50.0 and g["min_fps"] == 8.9 and len(g["scenes"]) == 2, g
     assert g["api"].startswith("DirectX 12") and g["seconds"] == 134.3, g
+    run4 = os.path.join(os.path.dirname(run), "20261008-012347-dos2-t")
+    os.makedirs(os.path.join(run4, "frames"))
+    open(os.path.join(run4, "frames", "FEX_2026-10-08_01-23-47.csv"), "w").write(
+        "os,cpu,gpu,ram,kernel,driver,cpuscheduler\nUbuntu,,,1,6.17,,performance\n"
+        "fps,frametime,cpu_load,gpu_load,elapsed\n" + "".join("60,%s,15,25,1\n" % ("50.0" if i == 0 else "10.0") for i in range(100)))
+    open(os.path.join(run4, "frames", "FEX_2026-10-08_01-23-47_summary.csv"), "w").write("Average FPS\n96\n")
+    json.dump({"game": "Divinity: Original Sin 2", "api": "DirectX 11 (DXVK)"}, open(os.path.join(run4, "meta.json"), "w"))
+    os.link(os.path.join(run, "telemetry.jsonl"), os.path.join(run4, "telemetry.jsonl"))
+    f = build(run4, "dos2", "t")
+    assert f["frames"] == 100 and f["avg_fps"] == round(100000 / 1040, 1) and f["low1_fps"] == 20.0, f
+    assert f["game"] == "Divinity: Original Sin 2" and f["max_fps"] == 100.0 and f["min_fps"] == 20.0, f
     print("ok")
 
 
