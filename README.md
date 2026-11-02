@@ -9,7 +9,7 @@ measurably help, and the data.
 
 **Status:** early. Tested on one Spark with Canonical's arm64 Steam snap and a system FEX. Results so far cover
 Cyberpunk 2077 (DirectX 12), Rise of the Tomb Raider (DirectX 11 vs 12), Red Dead Redemption 2 (DirectX 12) and
-The Witcher 3 (DirectX 12, measured at a player's save).
+The Witcher 3 (DirectX 12, measured at a player's save). STAR WARS: Galactic Racer (Denuvo) runs with a patched FEX.
 
 ## Results so far
 
@@ -28,6 +28,12 @@ Red Dead Redemption 2 (FEX 2610 setup, DX12, 1080p, the game's Safe defaults, VS
 The Witcher 3 (FEX 2610 setup, DX12, 1080p, auto-detected settings, Novigrad save, VSync off): **55-63 fps with a
 35 ms stall ten times a second; 88.1 fps, 1% low 63.2, with `system/shim.sh`**, which caches one Win32 call the game
 polls and Wine makes expensive ([details](docs/FINDINGS.md#the-witcher-3-a-10-hz-am-i-online-check)).
+
+STAR WARS: Galactic Racer (Denuvo): stock FEX stops it 0.6 s in; **with `system/fex-patched.sh` it runs**. Denuvo
+needs two things FEX 2610 lacks: Proton must catch the game's direct Windows syscalls, and x86 hardware breakpoints
+must fire ([details](docs/FINDINGS.md#star-wars-galactic-racer-what-denuvo-needs-from-fex)). Racing at medium with
+DLSS Performance: **83 fps, no flicker** with its launch profile (Nanite off, the game on the fast cores from launch,
+more audio buffering; [details](docs/FINDINGS.md#star-wars-galactic-racer-flash-frames-hitches-and-audio)).
 
 What we learned:
 
@@ -63,6 +69,8 @@ system/fex-system.sh install && system/fex-system.sh share-snap
 GAMESPARK_STEAM=fex tools/steam-console.sh  # other commands detect which Steam is running
 system/console-mode.sh enable fex           # optional: boot into this Steam (needed for Xbox pads in Big Picture)
 controller/pair.sh                          # optional: pair an Xbox or PS5 controller (see controller/README.md)
+system/fex-patched.sh install               # needed for Denuvo games such as Galactic Racer: a patched FEX for the
+                                            # games whose profiles/launch/<appid>.env sets FEX_BINARY=gamespark
 
 # Once per game: launch through GameSpark's wrapper, which applies profiles/launch/<appid>.env (launcher skips,
 # controller and DLSS fixes) and per-run settings, so they change without editing Steam's launch options again.
@@ -100,13 +108,14 @@ in `profiles/launch/`.
 | `bench/ingest.py` | Run record: avg and 1% low (rendered and displayed), telemetry for the benchmark window |
 | `bench/telemetry.py` | 1 Hz GPU/CPU sampler |
 | `bench/tune.py`, `profiles/` | Autotuner and the per-game, per-Steam-setup profiles it writes |
-| `tools/launch.sh`, `profiles/launch/` | Steam launch wrapper and per-game launch settings (env, executable swap, args) |
+| `tools/launch.sh`, `profiles/launch/` | Steam launch wrapper and per-game launch settings (env, executable swap, args, Unreal Engine.ini) |
 | `lib/menu.sh`, `tests/menu-replay.sh` | OCR-gated menu steps for adapters, and their replay test on saved screenshots |
 | `system/frametimes.sh` | Builds the arm64 MangoHud layer used by `bench/run.sh FRAMES=SECS` |
 | `shim/`, `system/shim.sh` | Proxy DLL that caches Win32 calls Wine makes slow, its per-game installer, its check (`shim_check.c`), and a reproducer for the Wine cost (`igcs_cost.c`) |
 | `profile/` | perf + FEX perf-map profiler and the layer classifier |
-| `system/` | Per-game scheduler governor, system FEX setup, console mode, global scheduler installer |
-| `tools/` | Steam pipe helpers, launch-option editor, keyboard/mouse and virtual gamepad input, screenshots, GPU probe |
+| `system/` | Per-game scheduler governor, system FEX setup, the patched FEX build (`fex-patched.sh`), console mode, global scheduler installer |
+| `fex/patches/` | Local FEX patches (seccomp trap semantics, x86 hardware execute breakpoints) built by `system/fex-patched.sh` |
+| `tools/` | Steam pipe helpers, launch-option editor, keyboard/mouse and virtual gamepad input, screenshots, GPU probe, and checks of how FEX handles what Denuvo relies on (`faultprobe.c`, `syscall_check.c`, `hwbp_check.c`) |
 | `controller/` | Bluetooth pairing for Xbox and PlayStation controllers, the BlueZ settings and Steam udev rule they need, and a check for FEX's 32-bit evdev bug |
 | `results/` | Run and profile records behind the numbers in this README |
 | `docs/` | Findings and methodology |
@@ -114,6 +123,9 @@ in `profiles/launch/`.
 ## Known issues
 
 - Games with kernel anti-cheat in online modes (EAC, BattlEye) do not run.
+- Denuvo games need the patched FEX (`system/fex-patched.sh`): stock FEX 2603/2610 cannot run Denuvo's startup checks.
+  Each new runtime can count as a new machine against Denuvo's activation limit, so keep one setup per game.
+- Steam launch options are per account: GameSpark's wrapper only applies on the account they were set for.
 - FEX Vulkan thunking does not reach games inside the Steam snap's container; `system/fex-system.sh` works
   around it with a second Steam under a system FEX. Run only one of the two Steams at a time.
 - `scx_lavd` crashes on GB10; `system/scheduler.sh` uses `scx_bpfland`.
