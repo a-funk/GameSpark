@@ -124,6 +124,28 @@ NVIDIA's native arm64 `libGLX_nvidia`/`libnvidia-glcore`.
 - So the best setup is per game, like the scheduler. FEX can turn thunking off per executable (AppConfig), but
   the FEX version is per Steam install.
 
+## Red Dead Redemption 2
+
+On the FEX 2610 setup with NVIDIA's native driver, DX12 (VKD3D-Proton), 1080p, the game's Safe defaults (mostly
+Low, Ultra textures), VSync off: **74.7-76.0 fps** over two runs (pass 4, the long scene the game reports; passes
+0-3 run 72-126 fps). The GPU is about 50% busy, so like the other games it is limited by translated CPU work.
+
+Getting there took five fixes, each now built into the adapter or documented in its header:
+
+- **Rockstar launcher sign-in.** On the plain X11 desktop the sign-in window starts hidden in the tray (right-click >
+  Open), then stays blank white: its Chromium draws through DXVK but nothing reaches the window, with or without FEX
+  GL/Vulkan thunking. Inside a Wine virtual desktop (prefix registry `Software\Wine\Explorer`) it renders.
+- **Launcher stalls.** About half of launches stall at sign-in with no window; a fresh launch clears it, so the
+  runner retries launches (`LAUNCH_RETRIES`, `game_abort`).
+- **Software rendering.** `system/fex-system.sh` installs Mesa's Vulkan drivers, so the host loader also lists
+  llvmpipe. DXVK and VKD3D skip software devices; RDR2 does not, and its Safe config picked it (7.9 fps, GPU at 3%).
+  `VK_LOADER_DRIVERS_SELECT=*nvidia*` in the launch options hides the other drivers.
+- **NVAPI must stay on.** With `PROTON_DISABLE_NVAPI=1` the game sees an NVIDIA GPU, then polls for
+  `nvapi64.dll` forever (about 1,400 lookups a second, each a full scan of `system32`; found with perf and strace).
+- **Vulkan crashes.** RDR2's own Vulkan renderer on the GB10 through FEX's Vulkan thunking crashes during init
+  (access violation in `RDR2.exe`); with NVAPI hidden it hangs instead. It ran only on llvmpipe. DX12 works, so the
+  Vulkan vs DX12 comparison is blocked on this, not yet measured.
+
 ## The scheduler is a per-game choice
 
 | Game | Default scheduler | `scx_bpfland -m performance` | Effect |

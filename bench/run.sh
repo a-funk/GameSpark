@@ -25,8 +25,14 @@ trap 'kill $TEL 2>/dev/null; [ -n "${DRIVE:-}" ] && { pkill -P "$DRIVE" 2>/dev/n
 date +%s > "$OUT/start"
 [ -n "${SHOT_AT:-}" ] && (sleep "$SHOT_AT"; "$ROOT/tools/shot.sh" "$OUT/mid.png" >/dev/null) 8>&- &
 
-steam_launch "$APPID" "$LAUNCH_ARGS" || die "Steam did not accept the launch"
-for i in $(seq 300); do G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break; sleep 1; done
+# Launchers can stall before starting the game (RDR2's Rockstar launcher at sign-in): adapters set LAUNCH_RETRIES,
+# LAUNCH_WAIT and a game_abort that clears the stuck launch.
+for attempt in $(seq "${LAUNCH_RETRIES:-1}"); do
+  steam_launch "$APPID" "$LAUNCH_ARGS" || die "Steam did not accept the launch"
+  for i in $(seq "${LAUNCH_WAIT:-300}"); do G=$(pgrep -f "$GAME_PROC" | head -1); [ -n "$G" ] && break; sleep 1; done
+  [ -n "${G:-}" ] && break
+  declare -F game_abort >/dev/null && { echo "game did not start (attempt $attempt)"; game_abort; }
+done
 [ -z "${G:-}" ] && die "game never started"
 echo "game pid $G after ${i}s"
 # The governor (system/governor.sh) may switch schedulers once the game appears; record what the run used.
