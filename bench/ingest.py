@@ -162,6 +162,9 @@ def build(run, game, label):
     }
     if p.get("scenes"):
         doc["scenes"] = p["scenes"]
+    apps = os.path.join(run, "gpu-apps")   # bench/run.sh: other GPU compute processes seen during the run
+    if os.path.exists(apps):
+        doc["other_gpu_apps"] = sorted({os.path.basename(l.strip()) for l in open(apps) if l.strip()})
     sched = os.path.join(run, "sched")
     if os.path.exists(sched):  # "enabled bpfland_1.1.2_..." or "disabled"
         words = open(sched).read().split()
