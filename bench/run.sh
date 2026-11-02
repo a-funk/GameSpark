@@ -16,6 +16,8 @@
 #                    into the run dir: the record's fallback where MangoHud cannot load, e.g. 32-bit games
 #        GAME_RES=WxH  output resolution adapters write into the game's settings (default: the display's current mode,
 #                    lib/env.sh game_res); the display mode itself is recorded with the run (display) for bench/ingest.py
+#        BIG_PICTURE=behind  leave Steam's Big Picture open under the game, as a SparkHome tile launch does (it
+#                    minimises only its own kiosk); by default the run minimises both
 #        TARGET_AVG, TARGET_LOW1, TARGET_HITCHES  pass criterion in the record (bench/ingest.py; default 58 fps average,
 #                    48 fps 1% low, at most 2 frames over 50 ms per minute)
 set -u
@@ -139,6 +141,10 @@ fi
 # SparkHome minimises its kiosk when it hands a tile's game the screen; this launch is not its own, so minimise both here
 # and give the kiosk the screen back after the run (EXIT trap). Big Picture stays minimised until it is opened again.
 for w in "Steam Big Picture Mode" "SparkHome - Google Chrome"; do
+  if [ "${BIG_PICTURE:-}" = behind ] && [[ $w == Steam* ]]; then
+    python3 -I "$ROOT/tools/xinput.py" activate "$w" >/dev/null 2>&1 && echo "left \"$w\" open behind the game"
+    continue
+  fi
   python3 -I "$ROOT/tools/xinput.py" iconify "$w" >/dev/null 2>&1 || continue
   echo "minimised \"$w\" for the run"; [[ $w == SparkHome* ]] && KIOSK=$w
 done

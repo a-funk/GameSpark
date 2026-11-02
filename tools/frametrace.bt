@@ -1,0 +1,101 @@
+/*
+ * Per-frame timeline of a running VKD3D-Proton game, from the kernel only: no overlay, no relaunch, nothing injected.
+ * Started by tools/pacing.py trace (as root): bpftrace frametrace.bt GAME_PID SYNC_TID WINESERVER_PID
+ *
+ * SYNC_TID is VKD3D-Proton's "vkd3d-swapchain-sync" thread (comm "vkd3d-swapchain"). For each frame it blocks on a
+ * condition variable until the queue thread has called vkQueuePresentKHR (its futex wait returns: R), spins in
+ * vkWaitForPresentKHR until the frame is on screen, then releases DXGI's frame-latency semaphore, which under Proton's
+ * fsync is a shared FUTEX_WAKE (op 1): P. P is therefore the moment the driver finished presenting each frame (one
+ * per frame on FIFO/VSync), late by the waiter's own delay: the moment it reached the screen when the game bypasses
+ * the compositor (a flip), the moment it reached its window when Mutter composites it (see M); R is when the frame
+ * was handed to the driver.
+ *
+ * Each P line also carries what ran since the previous P: on-CPU microseconds per group of threads (game threads by
+ * name, other processes by name), and the game threads' run-queue wait (woken, not yet running: CPU contention).
+ *   P ns gt rt rhi queue sync workers shaders game_other wineserver steamwebhelper xorg gnome_shell other rq_sum rq_max
+ *   R ns            G ns slept_ns   (the game's main thread starting to run after sleeping >= 1 ms)
+ *   M ns            GNOME Shell (Mutter) swapping a composited frame: while Mutter composites the game instead of
+ *                   letting it bypass the compositor, the TV shows Mutter's frames, not the game's (Ubuntu 24.04's
+ *                   mutter-14 path; bpftrace refuses to start where that library is missing)
+ */
+rawtracepoint:sched_switch
+{
+  $prev = (struct task_struct *)arg1;
+  $next = (struct task_struct *)arg2;
+  $t = @on[$prev->pid];
+  if ($t && $prev->pid) {
+    $d = nsecs - $t;
+    $c = 12;
+    if ($prev->tgid == $1) {
+      $n = $prev->comm;
+      $c = 7;
+      if ($prev->pid == $1) { $c = 0; }
+      else if (strncmp($n, "RenderThread", 12) == 0) { $c = 1; }
+      else if (strncmp($n, "RHI", 3) == 0) { $c = 2; }
+      else if (strncmp($n, "vkd3d_queue", 11) == 0 || strncmp($n, "vkd3d_fence", 11) == 0) { $c = 3; }
+      else if ($prev->pid == $2) { $c = 4; }
+      else if (strncmp($n, "Foreground Work", 15) == 0 || strncmp($n, "Background Work", 15) == 0) { $c = 5; }
+      else if (strncmp($n, "[vk", 3) == 0 || strncmp($n, "dxvk-shader", 11) == 0 || strncmp($n, "PSOPrecompile", 13) == 0) { $c = 6; }
+    } else if ($prev->tgid == $3) {
+      $c = 8;
+    } else {
+      $g = $prev->group_leader->comm;
+      if (strncmp($g, "steamwebhelper", 14) == 0) { $c = 9; }
+      else if (strncmp($g, "Xorg", 4) == 0) { $c = 10; }
+      else if (strncmp($g, "gnome-shell", 11) == 0) { $c = 11; }
+    }
+    @cpu[$c] += $d;
+  }
+  delete(@on[$prev->pid]);
+  if ($next->pid) { @on[$next->pid] = nsecs; }
+  if ($next->tgid == $1) {
+    $w = @wk[$next->pid];
+    if ($w) {
+      $q = nsecs - $w;
+      @rq += $q;
+      if ($q > @rqmax) { @rqmax = $q; }
+      delete(@wk[$next->pid]);
+    }
+    if ($next->pid == $1) {
+      $s = @out;
+      if ($s && nsecs - $s >= 1000000) { printf("G %llu %llu\n", nsecs, nsecs - $s); }
+    }
+  }
+  if ($prev->pid == $1) { @out = nsecs; }
+}
+
+rawtracepoint:sched_wakeup
+{
+  $p = (struct task_struct *)arg0;
+  if ($p->tgid == $1) { @wk[$p->pid] = nsecs; }
+}
+
+tracepoint:syscalls:sys_enter_futex /tid == $2/
+{
+  @op = args->op;
+  if (args->op == 1) {
+    printf("P %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu\n", nsecs,
+           @cpu[0] / 1000, @cpu[1] / 1000, @cpu[2] / 1000, @cpu[3] / 1000, @cpu[4] / 1000, @cpu[5] / 1000,
+           @cpu[6] / 1000, @cpu[7] / 1000, @cpu[8] / 1000, @cpu[9] / 1000, @cpu[10] / 1000, @cpu[11] / 1000,
+           @cpu[12] / 1000, @rq / 1000, @rqmax / 1000);
+    clear(@cpu);
+    @rq = 0;
+    @rqmax = 0;
+  }
+}
+
+uprobe:/usr/lib/aarch64-linux-gnu/mutter-14/libmutter-cogl-14.so.0.0.0:cogl_onscreen_swap_buffers_with_damage,
+uprobe:/usr/lib/aarch64-linux-gnu/mutter-14/libmutter-cogl-14.so.0.0.0:cogl_onscreen_swap_region
+{
+  printf("M %llu\n", nsecs);
+}
+
+tracepoint:syscalls:sys_exit_futex /tid == $2 && @op == 128/
+{
+  printf("R %llu\n", nsecs);
+}
+
+END
+{
+  clear(@on); clear(@wk); clear(@cpu); clear(@op); clear(@rq); clear(@rqmax); clear(@out);
+}

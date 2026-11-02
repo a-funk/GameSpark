@@ -1292,3 +1292,28 @@ same configuration had measured 88 fps shortly before. `bench/run.sh` now record
 the start and end of each run (`other_gpu_apps` in the record, a warning on the console), and `bench/tune.py`
 discards such runs. An idle model that is still loaded counts too, which is conservative; Ollama unloads models
 after five idle minutes.
+
+## Crimson Desert: Denuvo passes, the intro video never shows (2026-10-27)
+
+Pearl Abyss 2026, BlackSpace Engine, DirectX 12 through VKD3D-Proton, Denuvo (5 PCs a day). Installed 2026-10-27
+(152 GB, build 25477059). Profile: `profiles/launch/3321460.env`.
+
+- **Denuvo:** on the first launch, with Street Fighter 6's recipe (`FEX_BINARY=gamespark FEX_NEEDSSECCOMP=1 FEX_GSHWBP=1
+  FEX_GSSMCWX=1`, `GameSpark-Proton-Exp-20261008`, the FEX Steam with the native Vulkan driver), the game opens its own
+  4K window, shows its loading emblem, compiles shaders (~5 cores, GPU ~8%, about 5 min) and shows the Pearl Abyss logo.
+  No hard error, no `0xDEADC0DE`.
+- **Then it waits on the logo forever** (GPU 47-95%, ~2.4 cores, no disk reads; keys do nothing). The intro video is
+  decoded through Media Foundation with a D3D11 device (DXVK) and handed to the D3D12 renderer through a shared NT
+  handle; that handoff fails about 30 times a second: `fixme:d3dkmt:NtGdiDdDDIOpenResourceFromNtHandle ... semi-stub!`
+  then DXVK `DxvkMemoryAllocator::createImageResource: Failed to open shared NT handle`. Proton also logs `Failed to find
+  H264 bitstream filter` and writes the `h264-used` tag (the placeholder path for videos it has no transcode for; Steam
+  had downloaded `transcoded_video.foz`, 1.47 GB, with the game).
+- **Ruled out:** Proton Hotfix 20261007 (Valve's default for this game) fails the same way. `WINEDLLOVERRIDES=mfplat=d`
+  stops the game at once (`MFPlat.DLL` is a static import). GE-Proton 11-11 has no seccomp syscall trap, so it cannot
+  run Denuvo here. The video files are inside the packed archives (`0000`-`0035`), so they cannot be renamed away.
+- **Next:** reproduce a D3D12 texture shared into D3D11 (`CreateSharedHandle` / `OpenSharedResource1`) outside the game,
+  to find which layer fails on this stack (Wine's d3dkmt shared resources, vkd3d-proton's export, DXVK's import, or the
+  thunked NVIDIA driver's external memory); then fix or work around it there.
+- **Controllers (not tested yet):** the game reads a DualSense only over USB; the profile has Street Fighter 6's XInput
+  fix. Steam showed "Grab a controller" and "plug in your DualSense" notices on the first launch.
+- Logs: `$SG_DATA/logs/steam-3321460-{first-launch,hotfix,nomfplat}.log.gz`.
